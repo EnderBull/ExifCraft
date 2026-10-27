@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="pm-token" content="__PM_TOKEN__">
+<title>ExifCraft</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div id="app">
+
+  <header id="toolbar" class="pywebview-drag-region">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" class="brand-mark"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="12" cy="12" r="3.4"/><path d="M7.5 5l1.2-2h6.6l1.2 2"/></svg>
+      <span>ExifCraft</span>
+    </div>
+
+    <div class="nav-group">
+      <button class="icon-btn" id="btnBack" title="后退 (Alt+←)">
+        <svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <button class="icon-btn" id="btnFwd" title="前进 (Alt+→)">
+        <svg viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg>
+      </button>
+      <button class="icon-btn" id="btnUp" title="上一级 (Alt+↑)">
+        <svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+      </button>
+    </div>
+
+    <div id="crumbs" class="crumbs"></div>
+
+    <div class="search">
+      <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+      <input id="search" type="text" placeholder="筛选文件名…" spellcheck="false" autocomplete="off">
+      <kbd>/</kbd>
+    </div>
+
+    <div class="tool-spacer"></div>
+
+    <select id="sort" class="mini-select" title="排序">
+      <option value="name">名称</option>
+      <option value="date">修改时间</option>
+      <option value="size">文件大小</option>
+      <option value="type">类型</option>
+    </select>
+
+    <div class="zoom-ctl" title="缩略图大小（Ctrl + 滚轮）">
+      <svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg>
+      <input id="zoom" type="range" min="120" max="300" step="4" value="168">
+    </div>
+
+    <button class="icon-btn" id="btnSettings" title="设置">
+      <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+    </button>
+
+    <div class="winctl" id="winctl" hidden>
+      <button class="wbtn" id="winMin" title="最小化">
+        <svg viewBox="0 0 24 24"><path d="M6 12h12"/></svg>
+      </button>
+      <button class="wbtn" id="winMax" title="最大化">
+        <svg viewBox="0 0 24 24" class="ico-max"><rect x="6.5" y="6.5" width="11" height="11" rx="1"/></svg>
+        <svg viewBox="0 0 24 24" class="ico-restore" hidden><rect x="5" y="8" width="10" height="10" rx="1"/><path d="M9 8V6a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1h-2"/></svg>
+      </button>
+      <button class="wbtn close" id="winClose" title="关闭">
+        <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main id="main">
+    <aside id="sidebar">
+      <div class="panel-head">
+        <span>目录</span>
+        <button class="icon-btn sm" id="btnAddRoot" title="打开任意文件夹">
+          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+      <div class="sidebar-tools">
+        <button class="switch-row" id="btnRecursive" title="同时显示所有子文件夹中的照片">
+          <span class="switch"><i></i></span>
+          <span class="switch-label">含子目录</span>
+        </button>
+      </div>
+      <div id="tree" class="tree"></div>
+    </aside>
+
+    <div id="center">
+      <div id="gridScroll" tabindex="0">
+        <div id="gridSizer"></div>
+        <div id="gridLayer"></div>
+      </div>
+      <div id="empty" class="empty">
+        <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="12" cy="12" r="3.4"/></svg>
+        <p>从左侧选择一个文件夹开始</p>
+        <span>支持 JPG / ARW / DNG</span>
+      </div>
+      <div id="marquee" class="marquee" hidden></div>
+    </div>
+
+    <aside id="inspector">
+      <div class="panel-head">
+        <div class="tabs">
+          <button class="tab active" data-tab="info">信息</button>
+          <button class="tab" data-tab="edit">编辑</button>
+        </div>
+      </div>
+      <div id="tabInfo" class="panel-body"></div>
+      <div id="tabEdit" class="panel-body" hidden></div>
+    </aside>
+  </main>
+
+  <footer id="statusbar">
+    <span id="stCount">—</span>
+    <span class="dot"></span>
+    <span id="stSel">未选择</span>
+    <span class="tool-spacer"></span>
+    <span id="stPath" class="trunc"></span>
+  </footer>
+
+  <div id="actionbar" class="actionbar" hidden>
+    <span id="abCount">已选 0 张</span>
+    <div class="ab-sep"></div>
+    <button class="btn" data-act="edit">编辑 EXIF</button>
+    <button class="btn" data-act="rename">重命名</button>
+    <button class="btn" data-act="export">导出</button>
+    <button class="btn ghost" data-act="clear">取消选择</button>
+  </div>
+
+</div>
+
+<div id="modalRoot"></div>
+
+<div class="rz n" data-rz="n"></div>
+<div class="rz s" data-rz="s"></div>
+<div class="rz w" data-rz="w"></div>
+<div class="rz e" data-rz="e"></div>
+<div class="rz nw" data-rz="nw"></div>
+<div class="rz ne" data-rz="ne"></div>
+<div class="rz sw" data-rz="sw"></div>
+<div class="rz se" data-rz="se"></div>
+<div id="viewer" class="viewer" hidden>
+  <div class="viewer-bar">
+    <span id="vwName"></span>
+    <span class="tool-spacer"></span>
+    <span id="vwIndex" class="vw-index"></span>
+    <button class="icon-btn" id="vwExif" title="显示 EXIF (I)"><svg viewBox="0 0 24 24"><path d="M12 16v-5M12 8h.01"/><circle cx="12" cy="12" r="9"/></svg></button>
+    <button class="icon-btn" id="vwZoomOut" title="缩小"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M8 11h6M20 20l-3.5-3.5"/></svg></button>
+    <button class="icon-btn" id="vwZoomIn" title="放大"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M8 11h6M11 8v6M20 20l-3.5-3.5"/></svg></button>
+    <button class="icon-btn" id="vwClose" title="关闭 (Esc)"><svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+  </div>
+  <div class="viewer-stage" id="vwStage">
+    <img id="vwImg" alt="">
+    <div class="vw-loading" id="vwLoading">载入中…</div>
+  </div>
+  <div class="viewer-exif" id="vwExifPanel" hidden></div>
+  <button class="vw-nav prev" id="vwPrev"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
+  <button class="vw-nav next" id="vwNext"><svg viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></svg></button>
+</div>
+
+<template id="tplTutorial">
+<div class="tutorial">
+  <h3>第一步 · 注册高德开放平台</h3>
+  <ol>
+    <li>打开 <a href="https://console.amap.com/" data-external>console.amap.com</a>，点右上角「注册」，用手机号完成注册并登录。</li>
+    <li>登录后进入「控制台」。</li>
+  </ol>
+
+  <h3>第二步 · 完成实名认证（不能跳过）</h3>
+  <ol>
+    <li>控制台左侧「账号管理」→「实名认证」。</li>
+    <li>个人开发者：填写真实姓名与身份证号，用支付宝或微信扫码完成人脸核验，通常 1 分钟内通过。</li>
+    <li>企业开发者：上传营业执照。</li>
+    <li><b>未完成实名认证无法创建 Key</b>，如果「添加 Key」按钮是灰色的，基本就是这一步没做。</li>
+  </ol>
+
+  <h3>第三步 · 创建应用</h3>
+  <ol>
+    <li>控制台左侧「应用管理」→「我的应用」。</li>
+    <li>点右上角「创建新应用」。</li>
+    <li>应用名称填 <code>ExifCraft</code>（名字随意，只用于你自己识别）。</li>
+    <li>应用类型选「其他」，点「创建」。</li>
+  </ol>
+
+  <h3>第四步 · 添加 Key（最容易出错的一步）</h3>
+  <ol>
+    <li>在刚创建的应用卡片上点「添加 Key」。</li>
+    <li>Key 名称随意填，例如 <code>exifcraft-local</code>。</li>
+    <li><b>服务平台必须选择「Web端(JS API)」</b>。选成「Web服务」「Android 平台」「iOS 平台」都会导致调用失败，报 <code>USERKEY_PLAT_NOMATCH</code>。</li>
+    <li>勾选同意条款，点「提交」。</li>
+    <li>提交后列表中会出现一条记录，显示 <b>Key</b>（32 位字符）和 <b>安全密钥</b>（也是 32 位字符）。两个都要复制。</li>
+  </ol>
+
+  <h3>第五步 · 配置域名白名单</h3>
+  <ol>
+    <li>在 Key 所在行点「设置」或「编辑」。</li>
+    <li>找到「域名白名单」，填入：<code>127.0.0.1</code></li>
+    <li>保存。</li>
+    <li>说明：本工具的页面由本地服务提供，地址固定为 <code>http://127.0.0.1:端口/</code>。白名单只匹配域名部分，<b>不要</b>带 <code>http://</code>、端口号或斜杠。</li>
+  </ol>
+
+  <h3>第六步 · 填进本工具</h3>
+  <ol>
+    <li>把 32 位 <b>Key</b> 粘贴到上方「Key」输入框。</li>
+    <li>把 <b>安全密钥</b> 粘贴到「安全密钥」输入框（两者不要填反，长度一样，很容易搞混）。</li>
+    <li>点「测试连接」。地图能正常显示、能搜索到地点，就说明配置成功。</li>
+    <li>点「保存」。</li>
+  </ol>
+
+  <h3>常见报错对照</h3>
+  <table class="err-table">
+    <tr><td>INVALID_USER_KEY</td><td>Key 填错、被删除或复制时带了空格。重新复制一次。</td></tr>
+    <tr><td>USERKEY_PLAT_NOMATCH</td><td>Key 的服务平台选错。必须重新创建「Web端(JS API)」类型的 Key。</td></tr>
+    <tr><td>INVALID_USER_DOMAIN</td><td>域名白名单没填或填错。应填 <code>127.0.0.1</code>，不带协议和端口。</td></tr>
+    <tr><td>INVALID_USER_SCODE</td><td>安全密钥缺失或与 Key 不匹配。检查是否属于同一次创建。</td></tr>
+    <tr><td>DAILY_QUERY_OVER_LIMIT</td><td>当日免费配额用尽，次日恢复。</td></tr>
+    <tr><td>地图空白但无报错</td><td>多半是白名单未生效，等待 1~2 分钟后重试；或检查网络能否访问 webapi.amap.com。</td></tr>
+  </table>
+
+  <h3>关于配额与安全</h3>
+  <ul>
+    <li>个人开发者有免费日配额（具体数值以高德控制台为准）。本工具只在打开地图选点窗口时加载一次地图，正常使用远低于上限。</li>
+    <li>Key 只保存在本机 <code>%LOCALAPPDATA%\ExifCraft\config.json</code>，不会上传到任何服务器。</li>
+    <li>如果怀疑 Key 泄露，可在高德控制台删除该 Key 并重新创建。</li>
+    <li>不填 Key 也能正常使用全部 EXIF 功能，只是无法使用地图选点，可手动输入经纬度。</li>
+  </ul>
+</div>
+</template>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
