@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# PyInstaller
+dist/
+build/ExifCraft/
+*.spec.bak
+
+# 本地草稿
+.dev/
+.release/
+*.log
