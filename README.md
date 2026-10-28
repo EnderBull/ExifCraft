@@ -11,7 +11,7 @@
 [![Release](https://img.shields.io/github/v/release/EnderBull/ExifCraft?color=4d7cfe&label=release)](../../releases/latest)
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-4d7cfe)](../../releases/latest)
 [![License](https://img.shields.io/github/license/EnderBull/ExifCraft?color=4d7cfe)](LICENSE)
-[![Size](https://img.shields.io/badge/portable-17.8%20MB-4d7cfe)](../../releases/latest)
+[![Size](https://img.shields.io/badge/portable-18.1%20MB-4d7cfe)](../../releases/latest)
 
 [下载](#下载) · [功能](#能做什么) · [截图](#截图) · [从源码运行](#从源码运行) · [路线图](#路线图)
 
@@ -21,14 +21,15 @@
 
 ## 为什么是它
 
-- **小** — 绿色版 17.8 MB，解压即用，不写注册表；冷启动 1.5–3 秒
+- **小** — 绿色版 18.1 MB，解压即用，不写注册表；冷启动 1.5–3 秒
 - **无损** — 写 EXIF 只替换 APP1 段，不重新压缩图像数据，画质零损失
 - **干净** — 界面用原生 HTML/CSS/JS，无框架无构建；后端只用 Python 标准库 + Pillow + piexif + exifread；全程不联网
 - **够快** — 虚拟滚动网格，上万张照片也不卡；缩略图按当前视口优先级加载，滚到哪先加载哪
+- **好看** — 界面按 Material Design 3 手写（令牌、状态层、涟漪、tooltip），仍然零框架零外链，体积 +0
 
 ## 下载
 
-到 [Releases](../../releases/latest) 页面下载 **ExifCraft-v1.4.0-win64-portable.zip**（绿色版，解压即用，无需安装）。
+到 [Releases](../../releases/latest) 页面下载 **ExifCraft-v2.0.0-win64-portable.zip**（绿色版，解压即用，无需安装）。
 
 解压后双击 `ExifCraft.exe`。首次启动会自动创建配置目录 `%LOCALAPPDATA%\ExifCraft`：
 
@@ -48,6 +49,7 @@ backups/        每次写入前的 EXIF 备份
 - 中间缩略图网格，虚拟滚动，上万张也不卡；缩略图按**当前视口优先级**加载，滚到哪先加载哪
 - 双击进入大图：缩放、拖拽、← → 切换、`I` 叠加显示 EXIF
 - 「含子目录」开关：一键把整个文件夹树里的照片铺平显示
+- 支持 JPG 与常见 RAW（CR3 / ARW / DNG / CR2 / NEF / ORF / RW2），RAW 直接用文件内嵌的 JPEG 预览
 
 ### 改 EXIF（只改 JPG）
 
@@ -60,6 +62,7 @@ backups/        每次写入前的 EXIF 备份
 
 - **批量重命名**：模板由「变量块 + 文字」拼成，每个变量带说明按钮，点 × 可单独删除；实时预览新旧对照、冲突检测、可撤销
 - **缩放导出**：只导出 JPG，默认长边 3840、质量 85；拍摄参数 / 作者版权 / GPS / ICC 四项独立开关
+- **左右栏可拖动**：目录栏与信息栏的宽度用鼠标拖动调整，双击恢复默认，下次启动保持
 
 ## 截图
 
@@ -130,6 +133,17 @@ pyinstaller --noconfirm --clean ExifCraft.spec
 
 **坐标说明**：EXIF 存的是 WGS-84，高德地图用 GCJ-02（火星坐标）。工具内部会自动转换，写入文件的一律是标准 WGS-84，往返误差小于 1 米。如果某张照片的坐标本身就是火星坐标（部分国产 App 会这样写），勾选编辑面板里的「这张是火星坐标」开关即可。
 
+## 配置 ExifTool（可选，只用于读）
+
+不配置也能用全部功能：JPG 读写、所有照片浏览、CR3 的常用 EXIF 显示都是内置实现的。ExifTool 只在你想要**更完整的 CR3 元数据**时才需要，而且它在本程序里**只读不写**，任何 RAW 都不会被修改。
+
+1. 到 [exiftool.org](https://exiftool.org/) 下载 **Windows Executable**（形如 `exiftool-13.59_64.zip`），不要下 Perl 源码包
+2. 解压得到 `exiftool-13.59_64` 文件夹，里面有 `exiftool.exe` 和 `exiftool_files`。**整个文件夹要一起留着**，exe 离开它会直接报错
+3. 把整个文件夹拷到 `ExifCraft.exe` 旁边即可；也可以在 **设置 → ExifTool** 里点「选择…」指到任意位置的 `exiftool.exe`
+4. 回到设置页看状态：显示版本号和「来源」（程序目录 / 设置中指定的路径）就说明接上了
+
+程序**不会**去系统 PATH 里找 ExifTool —— 避免误用你机器上别的软件自带的那一份。没有内置它，是因为它会多占约 27 MB。
+
 ## 格式支持
 
 | 格式 | 浏览 | 读 EXIF | 写 EXIF | 导出 |
@@ -138,9 +152,11 @@ pyinstaller --noconfirm --clean ExifCraft.spec
 | ARW（索尼） | ✅ | ✅ | ❌ | ❌ |
 | DNG（大疆） | ✅ | ✅ | ❌ | ❌ |
 | CR2 / NEF / ORF / RW2 等 | ✅ | ✅ | ❌ | ❌ |
-| CR3（佳能） | ⏳ 计划中 | — | ❌ | ❌ |
+| CR3（佳能） | ✅ | ✅ | ❌ | ❌ |
 
-RAW 的缩略图和大图直接读取文件内嵌的 JPEG 预览，不解码原始像素，所以速度很快。RAW 文件只读，任何写入操作都会自动跳过。
+RAW 的缩略图和大图直接读取文件内嵌的 JPEG 预览，不解码原始像素，所以速度很快。**所有 RAW（含 CR3/ARW/NEF/DNG/CR2/ORF/RW2）都只读**，任何写入操作都会自动跳过 —— 这是有意的设计，不是缺失。
+
+CR3 的 EXIF 由内置的 ISO BMFF 解析器读取（拍摄时间、光圈、快门、ISO、焦距、镜头、作者、版权、GPS 等常用字段都在）。想读到更细的标签（机身序列号、镜头编号等），可以自备一份 [ExifTool](https://exiftool.org/) 放到程序目录，它**只用于读取，不参与写入**。
 
 ## 关于 EXIF 写入
 
@@ -149,17 +165,22 @@ RAW 的缩略图和大图直接读取文件内嵌的 JPEG 预览，不解码原�
 **一个需要知道的限制**：重建 EXIF 段时，相机厂商私有数据（MakerNote）内部的偏移指针可能失效。这不影响任何看图软件、Lightroom、Photoshop 的正常显示，但极少数依赖 MakerNote 的镜头校正工具可能读不到原始信息。所以：
 
 - 每次写入前都会自动备份，设置页可一键回滚
-- 如果对兼容性要求极高，可以在写入后用 [ExifTool](https://exiftool.org/) 做一次只读校验（`exiftool -a -G1 文件名`）。程序**暂不自动调用** ExifTool —— 让 ExifTool 接管写入的高兼容模式在路线图里
+- 如果对兼容性要求极高，可以在写入后用 [ExifTool](https://exiftool.org/) 做一次只读校验（`exiftool -a -G1 文件名`）。程序不接管这条路径：**ExifTool 在本程序里只用于读取 CR3**，写入仍走 piexif 的无损段替换
 
 ## 路线图
 
-**已确定的后续更新（三条）**
+**已确定的后续更新**
 
 | 计划 | 说明 |
 |---|---|
-| ① **佳能 CR3 支持** | CR3 是 ISO BMFF 容器（不是 TIFF 结构），需要单独解析盒结构定位内嵌预览与 EXIF |
-| ② **macOS 版** | 可复用 85–90% 代码，主要工作在打包、代码签名与公证、TCC 权限 |
-| ③ **ExifTool 高兼容模式** | 检测到用户自备 ExifTool 时改由它接管写入，解决 MakerNote 偏移失效问题；不内置 ExifTool，体积 +0 |
+| ① **macOS 版** | 可复用 85–90% 代码，主要工作在打包、代码签名与公证、TCC 权限 |
+
+**已在 2.0 完成的**
+
+| 计划 | 说明 |
+|---|---|
+| ✅ **佳能 CR3 支持** | 内置 ISO BMFF 解析器读缩略图、内嵌大图预览与 EXIF；CR3 与其余 RAW 一样只读 |
+| ✅ **ExifTool 可选接入** | 检测到用户自备 ExifTool 时用它把 CR3 的 EXIF 读得更完整；只读、不接管写入、不内置（体积 +0）、不查系统 PATH |
 
 **暂不做**
 
@@ -174,8 +195,11 @@ RAW 的缩略图和大图直接读取文件内嵌的 JPEG 预览，不解码原�
 **缩略图显示不出来？**
 文件可能被占用，或所在磁盘已断开。尝试刷新目录（重新点一次左侧文件夹）。
 
-**写入失败提示「RAW 文件不支持写入」？**
-正常行为。RAW 只读，只改 JPG。
+**写入失败提示「RAW 文件只读，已跳过」？**
+正常行为。所有 RAW（含 CR3）只读，只改 JPG。
+
+**CR3 的 EXIF 比别的软件少几项？**
+内置解析器覆盖常用字段（拍摄时间、光圈、快门、ISO、焦距、镜头、作者、版权、GPS）。想更全就把一份 [ExifTool](https://exiftool.org/) 解压到 `ExifCraft.exe` 旁边，程序会自动发现它并用它读取 —— 只读，不会写入任何 RAW。
 
 **改完时间后排序没变？**
 按「修改时间」排序用的是文件系统时间，不是 EXIF 拍摄时间。切换到按名称排序，或重新进入目录。
@@ -210,10 +234,12 @@ ExifCraft/
 │  ├─ exifio.py          EXIF 读取 / 无损写入 / 备份回滚
 │  ├─ ops.py             批量重命名、缩放导出、任务进度
 │  ├─ coords.py          WGS-84 ↔ GCJ-02 坐标转换
+│  ├─ iso_bmff.py        CR3（ISO BMFF）盒结构解析，内置，无 ExifTool 也用它
+│  ├─ exiftool.py        可选的 ExifTool 检测与只读读取（不内置）
 │  └─ config.py          配置与路径
 ├─ web/
 │  ├─ index.html         界面结构 + 高德 Key 获取教程
-│  ├─ style.css          深色 / 浅色主题
+│  ├─ style.css          Material Design 3 令牌 + 深色 / 浅色主题
 │  └─ app.js             全部交互逻辑
 ├─ build/                应用图标
 ├─ assets/               README 用图

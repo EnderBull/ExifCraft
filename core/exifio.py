@@ -1,7 +1,12 @@
-"""EXIF 读取（JPG / ARW / DNG）与 JPG EXIF 无损写入、备份与回滚。"""
+"""EXIF 读取（JPG / RAW / CR3）与写入、备份与回滚。
+
+JPG 走 piexif 做 EXIF 段无损替换。所有 RAW（含 CR3）一律**只读**：既不写文件，
+也不做备份；ExifTool 若存在，只用来把 CR3 的 EXIF 读得更完整。
+"""
 from __future__ import annotations
 
 import base64
+import io
 import json
 import os
 import time
@@ -11,7 +16,7 @@ from fractions import Fraction
 import exifread
 import piexif
 
-from . import config, media
+from . import config, exiftool, iso_bmff, media
 
 # ---------------------------------------------------------------- 展示元数据
 
@@ -96,15 +101,126 @@ def _dt_to_exif(text: str) -> str:
     return s[:19]
 
 
+class _EtTag:
+    """把 ExifTool 的 JSON 值包装成 exifread 风格的对象，让下面的取值逻辑
+    能在「exifread 解析」与「ExifTool 解析」两条路上共用同一份代码。"""
+
+    __slots__ = ("printable", "values")
+
+    def __init__(self, value):
+        if isinstance(value, (list, tuple)):
+            self.values = list(value)
+            self.printable = " ".join(str(x) for x in value)
+        else:
+            self.values = [value]
+            self.printable = str(value)
+
+
+# ExifTool 的裸标签名 -> exifread 的 key（只列 read_meta 会用到的）
+_ET_TO_EXIFREAD = {
+    "Make": "Image Make",
+    "Model": "Image Model",
+    "Artist": "Image Artist",
+    "Copyright": "Image Copyright",
+    "ImageDescription": "Image ImageDescription",
+    "ImageWidth": "Image ImageWidth",
+    "ImageHeight": "Image ImageLength",
+    "DateTimeOriginal": "EXIF DateTimeOriginal",
+    "DateTimeDigitized": "EXIF DateTimeDigitized",
+    "LensModel": "EXIF LensModel",
+    "LensSpecification": "EXIF LensSpecification",
+    "FNumber": "EXIF FNumber",
+    "ExposureTime": "EXIF ExposureTime",
+    "ISO": "EXIF ISOSpeedRatings",
+    "PhotographicSensitivity": "EXIF PhotographicSensitivity",
+    "FocalLength": "EXIF FocalLength",
+    "FocalLengthIn35mmFormat": "EXIF FocalLengthIn35mmFilm",
+    "ExposureCompensation": "EXIF ExposureBiasValue",
+    "WhiteBalance": "EXIF WhiteBalance",
+    "ExposureProgram": "EXIF ExposureProgram",
+    "MeteringMode": "EXIF MeteringMode",
+    "ExifImageWidth": "EXIF ExifImageWidth",
+    "ExifImageHeight": "EXIF ExifImageLength",
+}
+
+
+def _read_cr3_tags_via_exiftool(path: str) -> tuple[dict, dict]:
+    """ExifTool 对 CR3 的覆盖比内置解析器全（CMT1/2/3/4 都会合并），
+    有 ExifTool 时优先走这条路。"""
+    raw = exiftool.read_tags(path, ["EXIF:all", "GPS:all"])
+    tags: dict = {}
+    for name, key in _ET_TO_EXIFREAD.items():
+        if name in raw:
+            tags[key] = _EtTag(raw[name])
+    gps = {"lat": None, "lng": None, "alt": None}
+    try:
+        if raw.get("GPSLatitude") is not None and raw.get("GPSLongitude") is not None:
+            lat = float(raw["GPSLatitude"])
+            lng = float(raw["GPSLongitude"])
+            if raw.get("GPSLatitudeRef") in ("S", "s"):
+                lat = -abs(lat)
+            if raw.get("GPSLongitudeRef") in ("W", "w"):
+                lng = -abs(lng)
+            if not (lat == 0 and lng == 0):
+                gps["lat"] = round(lat, 7)
+                gps["lng"] = round(lng, 7)
+        if raw.get("GPSAltitude") is not None:
+            alt = float(raw["GPSAltitude"])
+            if str(raw.get("GPSAltitudeRef")) in ("1", "-1"):
+                alt = -abs(alt)
+            gps["alt"] = round(alt, 1)
+    except (TypeError, ValueError):
+        pass
+    return tags, gps
+
+
+def _read_cr3_tags(path: str) -> tuple[dict, dict]:
+    """CR3 的 EXIF 分散在 CMT1（IFD0）与 CMT2（ExifIFD）两个盒里，各自是一段
+    独立 TIFF，必须分别交给 exifread 解析再合并。CMT4 的 GPS IFD 用 exifread
+    解析不出来，交给 iso_bmff.parse_gps 手工解。
+
+    返回 (tags, gps)。tags 同时补一份 "EXIF xxx" 别名，让下面的取值逻辑
+    与 JPG 共用同一套 key。
+    """
+    cmts = iso_bmff.read_cmt(path)
+    merged: dict = {}
+    for name in ("CMT1", "CMT2"):
+        blob = cmts.get(name)
+        if not blob:
+            continue
+        try:
+            part = exifread.process_file(io.BytesIO(blob), details=False, strict=False)
+        except Exception:
+            continue
+        for k, v in part.items():
+            merged.setdefault(k, v)
+            if k.startswith("Image "):
+                merged.setdefault("EXIF " + k[6:], v)
+    return merged, iso_bmff.parse_gps(cmts.get("CMT4"))
+
+
 def read_meta(path: str) -> dict:
     """返回 {fields: [...], edit: {...}, gps: {...}, file: {...}}"""
     kind = media.kind_of(path) or "jpg"
     tags: dict = {}
-    try:
-        with open(path, "rb") as f:
-            tags = exifread.process_file(f, details=False, strict=False)
-    except Exception:
-        tags = {}
+    cr3_gps: dict = {"lat": None, "lng": None, "alt": None}
+    if media.is_cr3(path):
+        if exiftool.find():
+            try:
+                tags, cr3_gps = _read_cr3_tags_via_exiftool(path)
+            except Exception:
+                tags, cr3_gps = {}, {"lat": None, "lng": None, "alt": None}
+        if not tags:
+            try:
+                tags, cr3_gps = _read_cr3_tags(path)
+            except Exception:
+                tags = {}
+    else:
+        try:
+            with open(path, "rb") as f:
+                tags = exifread.process_file(f, details=False, strict=False)
+        except Exception:
+            tags = {}
 
     edit: dict = {}
     fields: list[dict] = []
@@ -169,9 +285,11 @@ def read_meta(path: str) -> dict:
     put("ImageDescription", "说明", "author", desc.strip() or "—", desc.strip())
 
     gps = {"lat": None, "lng": None, "alt": None}
+    if cr3_gps["lat"] is not None:
+        gps = dict(cr3_gps)
     lat_tag = _tag(tags, "GPS GPSLatitude")
     lng_tag = _tag(tags, "GPS GPSLongitude")
-    if lat_tag and lng_tag:
+    if gps["lat"] is None and lat_tag and lng_tag:
         try:
             def dms(t):
                 vals = [float(x) for x in t.values]
@@ -201,6 +319,12 @@ def read_meta(path: str) -> dict:
             pass
 
     size = media.image_size(path)
+    if media.is_cr3(path):
+        # 内嵌预览尺寸远小于传感器尺寸，CR3 优先用 CMT1 里的 ImageWidth/Length
+        w_tag = _first_num(_tag(tags, "Image ImageWidth", "EXIF ExifImageWidth"))
+        h_tag = _first_num(_tag(tags, "Image ImageLength", "EXIF ExifImageLength"))
+        if w_tag and h_tag:
+            size = (int(w_tag), int(h_tag))
     try:
         st = os.stat(path)
         fsize = st.st_size
@@ -208,15 +332,20 @@ def read_meta(path: str) -> dict:
     except OSError:
         fsize, fmtime = 0, 0
 
+    # RAW 一律只读（含 CR3）；ExifTool 只用于读取，不参与写入
+    writable = kind == "jpg"
     file_info = {
         "name": os.path.basename(path),
         "path": path,
         "size": fsize,
         "mtime": fmtime,
         "kind": kind,
+        "ext": os.path.splitext(path)[1].lower(),
         "width": size[0] if size else 0,
         "height": size[1] if size else 0,
-        "writable": kind == "jpg",
+        "writable": writable,
+        "writer": "piexif" if kind == "jpg" else "",
+        "et_read": bool(media.is_cr3(path) and exiftool.find()),
     }
 
     return {"fields": fields, "edit": edit, "gps": gps, "file": file_info}
@@ -380,6 +509,7 @@ def _strip_app1(path: str) -> None:
 def backup_files(paths: list[str]) -> dict:
     entries = []
     for p in paths:
+        # 只有 JPG 会被写入，也只备份 JPG
         if media.kind_of(p) != "jpg":
             continue
         try:
@@ -454,8 +584,9 @@ def write_meta(paths: list[str], changes: dict, backup: bool = True) -> dict:
 
     results = []
     for p in paths:
+        # 所有 RAW（含 CR3）都只读，跳过而不报错，前端也不会把它们列为可写
         if media.kind_of(p) != "jpg":
-            results.append({"path": p, "ok": False, "error": "RAW 文件不支持写入"})
+            results.append({"path": p, "ok": False, "error": "RAW 文件只读，已跳过"})
             continue
         try:
             st = os.stat(p)

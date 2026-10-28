@@ -58,6 +58,24 @@ class WindowApi:
         w.destroy()
         return True
 
+    def pick_file(self) -> str:
+        """弹出系统文件对话框选一个文件（用于指定 exiftool.exe）。取消返回空串。"""
+        w = self._win()
+        if not w:
+            return ""
+        try:
+            import webview
+            res = w.create_file_dialog(
+                webview.OPEN_DIALOG,
+                allow_multiple=False,
+                file_types=("可执行文件 (*.exe)", "所有文件 (*.*)"),
+            )
+        except Exception:
+            return ""
+        if not res:
+            return ""
+        return res[0] if isinstance(res, (list, tuple)) else str(res)
+
     def get_bounds(self) -> dict:
         w = self._win()
         if not w:

@@ -13,7 +13,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import config, exifio, media, ops
+from . import config, exifio, exiftool, media, ops
 
 if getattr(sys, "frozen", False):
     WEB_DIR = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "web"
@@ -124,6 +124,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(exifio.read_meta(p))
             if path == "/api/settings":
                 return self._json(config.load())
+            if path == "/api/exiftool":
+                return self._json(exiftool.status())
             if path == "/api/backups":
                 return self._json({"items": exifio.list_backups()})
             if path == "/api/job":
@@ -207,7 +209,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(ops.get_job(job["id"]))
 
             if path == "/api/settings":
-                return self._json(config.save(data or {}))
+                saved = config.save(data or {})
+                if "exiftool_path" in (data or {}):
+                    exiftool.reset()
+                return self._json(saved)
 
             if path == "/api/job/cancel":
                 return self._json({"ok": ops.cancel_job(data.get("id") or "")})

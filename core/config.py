@@ -45,6 +45,7 @@ DEFAULTS = {
     "last_dir": "",
     "sidebar_width": 248,
     "inspector_width": 320,
+    "exiftool_path": "",
 }
 
 

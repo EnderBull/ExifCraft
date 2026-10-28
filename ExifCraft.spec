@@ -2,6 +2,8 @@
 from PyInstaller.utils.hooks import collect_data_files
 from PyInstaller.utils.hooks import collect_submodules
 
+# web 是前端静态资源。ExifTool 不内置（约 27 MB，与轻量化目标冲突），
+# 用户需要时自己放到程序目录，或用设置页指定路径。
 datas = [('web', 'web')]
 hiddenimports = ['clr_loader', 'pythonnet']
 datas += collect_data_files('webview')

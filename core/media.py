@@ -16,7 +16,9 @@ from . import config
 Image.MAX_IMAGE_PIXELS = 400_000_000
 
 JPG_EXT = {".jpg", ".jpeg", ".jpe", ".jfif"}
-RAW_EXT = {".arw", ".srf", ".sr2", ".dng", ".raw", ".cr2", ".nef", ".orf", ".rw2", ".raf", ".pef", ".srw", ".rwl"}
+RAW_EXT = {".arw", ".srf", ".sr2", ".dng", ".raw", ".cr2", ".cr3", ".nef", ".orf", ".rw2", ".raf", ".pef", ".srw", ".rwl"}
+# CR3 是 ISO BMFF 容器（非 TIFF），写入需重建整段盒结构，因此和其余 RAW 一样只读。
+CR3_EXT = {".cr3"}
 ALL_EXT = JPG_EXT | RAW_EXT
 
 THUMB_MAX = 512
@@ -36,6 +38,10 @@ def kind_of(path: str) -> str | None:
 
 def is_photo(path: str) -> bool:
     return os.path.splitext(path)[1].lower() in ALL_EXT
+
+
+def is_cr3(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() in CR3_EXT
 
 
 # ---------------------------------------------------------------- 缩略图缓存

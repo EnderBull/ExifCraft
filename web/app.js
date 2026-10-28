@@ -2,6 +2,11 @@
 'use strict';
 
 const TOKEN = document.querySelector('meta[name="pm-token"]').content;
+/* RAW 格式统一正则（含佳能 CR3）。所有 RAW（含 CR3）一律只读；ExifTool 只用于读取。 */
+const RAW_RE = /\.(arw|dng|cr2|cr3|nef|orf|rw2|raf|pef|srw|raw|sr2|srf|rwl)$/i;
+const CR3_RE = /\.cr3$/i;
+const isRaw = (p) => RAW_RE.test(p);
+const isCr3 = (p) => CR3_RE.test(p);
 const PARAMS = new URLSearchParams(location.search);
 const FRAMED = PARAMS.has('framed');
 const CHROME = !FRAMED && PARAMS.has('chrome');
@@ -42,22 +47,23 @@ function toast(msg, type = '', ms = 3200, action = null) {
   if (!root) { root = document.createElement('div'); root.id = 'toasts'; document.body.appendChild(root); }
   const d = document.createElement('div');
   d.className = `toast ${type}`;
-  d.style.display = 'flex';
-  d.style.alignItems = 'center';
-  d.style.gap = '12px';
+  if (type === 'err' || type === 'ok') {
+    d.innerHTML = type === 'err'
+      ? '<svg class="snack-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4.5M12 16h.01"/></svg>'
+      : '<svg class="snack-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.6 2.6L16 9.6"/></svg>';
+  }
   const span = document.createElement('span');
   span.textContent = msg;
-  span.style.flex = '1';
   d.appendChild(span);
   if (action) {
     const btn = document.createElement('button');
-    btn.className = 'btn sm';
+    btn.className = 'snack-action';
     btn.textContent = action.label;
     btn.onclick = () => { d.remove(); action.fn(); };
     d.appendChild(btn);
   }
   root.appendChild(d);
-  const kill = () => { d.style.opacity = '0'; d.style.transform = 'translateX(12px)'; d.style.transition = 'all .2s'; setTimeout(() => d.remove(), 220); };
+  const kill = () => { d.classList.add('out'); setTimeout(() => d.remove(), 200); };
   if (ms > 0) setTimeout(kill, ms);
   return d;
 }
@@ -84,6 +90,8 @@ const S = {
   hIdx: -1,
   viewer: { idx: -1, zoom: 1, ox: 0, oy: 0 },
   cacheBust: {},
+  et: { available: false, version: '', path: '', source: '', readonly: true },
+  etAvailable: false,
 };
 
 /* ------------------------------------------------------------ 窗口控制（无边框） */
@@ -191,19 +199,138 @@ function wireWindowApi() {
   window.addEventListener('mouseup', () => { rs = null; });
 }
 
+/* ============================================================ exiftool */
+async function refreshExiftool() {
+  try {
+    S.et = await api('/api/exiftool');
+  } catch (e) {
+    S.et = { available: false, version: '', path: '', source: '', readonly: true };
+  }
+  S.etAvailable = !!S.et.available;
+  return S.et;
+}
+
+/* ============================================================ 分栏宽度
+   备用宽度：左栏（目录）与右栏（信息）都可以拖动改宽度。
+   宽度只写在 CSS 变量 --sw / --iw 上（style.css 的 #main 网格直接消费），
+   拖动过程中不落盘，松手才写 /api/settings，避免每帧一次请求。 */
+const COL_MIN = { sw: 180, iw: 240 };
+const COL_MAX = { sw: 440, iw: 620 };
+const COL_DEF = { sw: 248, iw: 320 };
+const COL_KEY = { sw: 'sidebar_width', iw: 'inspector_width' };
+/* 中间画布保底宽度：两栏加起来不能把网格挤没 */
+const CENTER_MIN = 320;
+
+/* 可用上限：窗口宽 - 另一栏 - 中间保底，且不超过各自的硬上限 */
+function colMax(which, other) {
+  const room = (window.innerWidth || 1440) - other - CENTER_MIN;
+  return Math.max(COL_MIN[which], Math.min(COL_MAX[which], room));
+}
+
+function clampCol(which, v, other) {
+  const raw = Math.round(Number(v) || COL_DEF[which]);
+  return Math.max(COL_MIN[which], Math.min(colMax(which, other), raw));
+}
+
+function colWidths() {
+  const s = S.settings || {};
+  const iw = clampCol('iw', s.inspector_width || COL_DEF.iw, COL_MIN.sw);
+  const sw = clampCol('sw', s.sidebar_width || COL_DEF.sw, iw);
+  return { sw, iw };
+}
+
+/* 把两栏宽度写到根节点的 CSS 变量上，网格与把手位置一起跟着变 */
+function applyColWidths(w) {
+  const c = w || colWidths();
+  S.colW = c;
+  document.documentElement.style.setProperty('--sw', c.sw + 'px');
+  document.documentElement.style.setProperty('--iw', c.iw + 'px');
+}
+
+function persistColWidths(w) {
+  const body = {};
+  body[COL_KEY.sw] = w.sw;
+  body[COL_KEY.iw] = w.iw;
+  api('/api/settings', { method: 'POST', body: JSON.stringify(body) }).catch(() => {});
+}
+
+function bindColumnResizers() {
+  $$('.col-rz').forEach((h) => {
+    const which = h.dataset.col === 'iw' ? 'iw' : 'sw';
+    h.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const startX = e.clientX;
+      const start = (S.colW || colWidths())[which];
+      // 左栏向右拖 = 变宽；右栏向右拖 = 变窄
+      const dir = which === 'sw' ? 1 : -1;
+      let cur = start;
+      h.classList.add('dragging');
+      document.body.classList.add('col-resizing');
+
+      const other = which === 'sw' ? 'iw' : 'sw';
+      const onMove = (ev) => {
+        const base = S.colW || colWidths();
+        const next = clampCol(which, start + (ev.clientX - startX) * dir, base[other]);
+        if (next === cur) return;
+        cur = next;
+        const w = Object.assign({}, base);
+        w[which] = next;
+        applyColWidths(w);
+      };
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+        h.classList.remove('dragging');
+        document.body.classList.remove('col-resizing');
+        if (cur !== start) {
+          S.settings[COL_KEY[which]] = cur;
+          persistColWidths(S.colW || colWidths());
+        }
+        renderGrid();
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    });
+
+    /* 双击把手恢复默认宽度 */
+    h.addEventListener('dblclick', () => {
+      const w = Object.assign({}, S.colW || colWidths());
+      w[which] = COL_DEF[which];
+      applyColWidths(w);
+      S.settings[COL_KEY[which]] = COL_DEF[which];
+      persistColWidths(w);
+      renderGrid();
+      toast(which === 'sw' ? '目录栏宽度已恢复默认' : '信息栏宽度已恢复默认');
+    });
+  });
+}
+
+/* 窗口变窄时把两栏一起收回到允许范围内，否则中间画布会被挤没 */
+window.addEventListener('resize', () => {
+  if (!S.colW) return;
+  const c = colWidths();
+  if (c.sw !== S.colW.sw || c.iw !== S.colW.iw) applyColWidths(c);
+});
+
 /* ============================================================ init */
 async function init() {
   try {
     S.settings = await api('/api/settings');
   } catch (e) { S.settings = {}; }
+  await refreshExiftool();
 
   document.documentElement.dataset.theme = S.settings.theme || 'dark';
   S.thumb = S.settings.thumb_size || 168;
   $('#zoom').value = S.thumb;
+  syncZoomPct();
   S.sort = S.settings.sort || 'name';
   $('#sort').value = S.sort;
   S.recursive = !!S.settings.recursive;
-  $('#btnRecursive').classList.toggle('on', S.recursive);
+  setRecursiveUi();
+
+  applyColWidths();
+  bindColumnResizers();
 
   bindToolbar();
   bindGrid();
@@ -291,19 +418,19 @@ async function toggleNode(node, kids, path) {
   kids.dataset.loaded = '1';
   const depth = (parseInt(node.dataset.depth, 10) || 0) + 1;
   const pad = `${TREE_INDENT + depth * TREE_STEP}px`;
-  kids.innerHTML = `<div class="node" style="padding-left:${pad};color:var(--text-3)">加载中…</div>`;
+  kids.innerHTML = `<div class="node node-hint" style="padding-left:${pad}">加载中…</div>`;
   try {
     const d = await api(`/api/list?path=${encodeURIComponent(path)}&sort=name`);
     kids.innerHTML = '';
     if (!d.dirs.length) {
-      kids.innerHTML = `<div class="node" style="padding-left:${pad};color:var(--text-3);font-size:11.5px">无子文件夹</div>`;
+      kids.innerHTML = `<div class="node node-hint small" style="padding-left:${pad}">无子文件夹</div>`;
       return;
     }
     for (const sub of d.dirs) {
       kids.appendChild(makeNode(sub.name, sub.path, depth, 'folder', sub.count, false));
     }
   } catch (e) {
-    kids.innerHTML = `<div class="node" style="padding-left:${pad};color:var(--danger)">${esc(e.message)}</div>`;
+    kids.innerHTML = `<div class="node node-hint err" style="padding-left:${pad}">${esc(e.message)}</div>`;
   }
 }
 
@@ -467,6 +594,7 @@ function pumpThumbs() {
     const done = () => {
       best.removeEventListener('load', done);
       best.removeEventListener('error', done);
+      best.dataset.thumbState = 'done';
       thumbActive.delete(best);
       pumpThumbs();
     };
@@ -616,12 +744,23 @@ function firstVisibleIndex() {
   return Math.floor(top / S.rowH) * S.cols;
 }
 
+/* 滑杆已填充比例（M3 slider 的 active track），纯视觉，无控制流 */
+function syncZoomPct() {
+  const el = $('#zoom');
+  if (!el) return;
+  const min = +el.min || 0;
+  const max = +el.max || 100;
+  const pct = ((+el.value - min) / (max - min)) * 100;
+  el.style.setProperty('--pct', pct.toFixed(1) + '%');
+}
+
 function setThumb(v) {
   const next = Math.max(120, Math.min(300, Math.round(v / 4) * 4));
   if (next === S.thumb) return;
   const idx = firstVisibleIndex();
   S.thumb = next;
   $('#zoom').value = next;
+  syncZoomPct();
   renderGrid();
   const scroll = $('#gridScroll');
   const row = Math.floor(Math.max(0, idx) / S.cols);
@@ -695,8 +834,20 @@ function bindGrid() {
 }
 
 /* ============================================================ inspector */
+/* 递归开关：视觉态 + 无障碍态一起更新 */
+function setRecursiveUi() {
+  const btn = $('#btnRecursive');
+  if (!btn) return;
+  btn.classList.toggle('on', S.recursive);
+  btn.setAttribute('aria-checked', S.recursive ? 'true' : 'false');
+}
+
 function tabTo(name) {
-  $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === name));
+  $$('.tab').forEach((t) => {
+    const on = t.dataset.tab === name;
+    t.classList.toggle('active', on);
+    t.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
   $('#tabInfo').hidden = name !== 'info';
   $('#tabEdit').hidden = name !== 'edit';
 }
@@ -731,12 +882,12 @@ function renderInfo() {
     return;
   }
   if (n > 1) {
-    const raw = Array.from(S.sel).filter((p) => /\.(arw|dng|cr2|nef|orf|rw2|raf|pef|srw|raw|sr2|srf|rwl)$/i.test(p)).length;
+    const raw = Array.from(S.sel).filter(isRaw).length;
     box.innerHTML = `
       <div class="multi-note">已选择 <b>${n}</b> 张照片${raw ? `，其中 <b>${raw}</b> 张为 RAW（只读）` : ''}。<br>
       切换到「编辑」标签可批量修改 EXIF；底部工具条可重命名或导出。</div>
       <div class="group-title">选中文件</div>
-      ${Array.from(S.sel).slice(0, 40).map((p) => `<div class="kv"><span class="v" style="font-size:11.5px;color:var(--text-2)">${esc(p.split(/[\\/]/).pop())}</span></div>`).join('')}
+      ${Array.from(S.sel).slice(0, 40).map((p) => `<div class="kv"><span class="v small">${esc(p.split(/[\\/]/).pop())}</span></div>`).join('')}
       ${n > 40 ? `<div class="kv"><span class="v dim">… 还有 ${n - 40} 个</span></div>` : ''}`;
     return;
   }
@@ -779,7 +930,7 @@ function renderInfo() {
     html += `<div class="kv"><span class="v dim">无 GPS 信息</span></div>`;
   }
 
-  html += `<div class="gps-actions" style="margin-top:16px">
+  html += `<div class="gps-actions top">
     <button class="btn sm" id="btnReveal">在文件夹中显示</button>
     <button class="btn sm" id="btnOpenViewer">大图查看</button>
   </div>`;
@@ -808,8 +959,8 @@ const EDIT_GROUPS = [
       { k: 'ExposureTime', label: '快门 (秒)', type: 'number', step: '0.0001', ph: '例如 0.004' },
       { k: 'ISO', label: 'ISO', type: 'number', step: '1', ph: '例如 400' },
       { k: 'FocalLength', label: '焦距 (mm)', type: 'number', step: '1', ph: '例如 50' },
-      { k: 'FocalLength35', label: '等效焦距 (mm)', type: 'number', step: '1', ph: '例如 75' },
-      { k: 'ExposureBias', label: '曝光补偿 (EV)', type: 'number', step: '0.1', ph: '例如 -0.3' },
+      { k: 'FocalLength35', label: '等效焦距', type: 'number', step: '1', ph: '例如 75' },
+      { k: 'ExposureBias', label: '曝光补偿', type: 'number', step: '0.1', ph: '例如 -0.3' },
       { k: 'WhiteBalance', label: '白平衡', type: 'select', opts: [['', '—'], ['0', '自动'], ['1', '手动']] },
       {
         k: 'ExposureProgram', label: '曝光程序', type: 'select', opts: [['', '—'], ['0', '未定义'], ['1', '手动'], ['2', '程序自动'],
@@ -837,17 +988,17 @@ function renderEdit() {
     box.innerHTML = '<div class="multi-note">先选择照片，再勾选要修改的字段。</div>';
     return;
   }
-  const jpgOnly = Array.from(S.sel).filter((p) => !/\.(arw|dng|cr2|nef|orf|rw2|raf|pef|srw|raw|sr2|srf|rwl)$/i.test(p));
-  const rawCount = n - jpgOnly.length;
+  const rawCount = Array.from(S.sel).filter(isRaw).length;
+  const jpgCount = n - rawCount;
   const single = n === 1 && S.meta && S.metaPath === Array.from(S.sel)[0];
   const edit = single ? S.meta.edit : {};
 
   let html = '';
   if (rawCount) {
-    html += `<div class="multi-note">已选 ${n} 张，其中 <b>${rawCount}</b> 张是 RAW，写入时会自动跳过。</div>`;
+    html += `<div class="multi-note">已选 ${n} 张，其中 <b>${rawCount}</b> 张是只读 RAW，写入时会自动跳过。</div>`;
   }
-  if (single && !S.meta.file.writable) {
-    html += `<div class="multi-note">这是 RAW 文件，<b>不支持写入</b>，仅可查看 EXIF。</div>`;
+  if (!jpgCount) {
+    html += '<div class="multi-note">选中的都是 RAW 文件，<b>只读</b>，仅可查看 EXIF。修改请选择 JPG。</div>';
   }
 
   for (const g of EDIT_GROUPS) {
@@ -1028,7 +1179,7 @@ function bindToolbar() {
 
   $('#btnRecursive').onclick = async () => {
     S.recursive = !S.recursive;
-    $('#btnRecursive').classList.toggle('on', S.recursive);
+    setRecursiveUi();
     api('/api/settings', { method: 'POST', body: JSON.stringify({ recursive: S.recursive }) }).catch(() => {});
     if (S.path) {
       const btn = $('#btnRecursive');
@@ -1127,9 +1278,9 @@ function modal({ title, body, foot, size = '', onClose }) {
   const root = $('#modalRoot');
   const scrim = document.createElement('div');
   scrim.className = 'scrim';
-  scrim.innerHTML = `<div class="modal ${size}">
+  scrim.innerHTML = `<div class="modal ${size}" role="dialog" aria-modal="true" aria-label="${esc(title)}">
       <div class="modal-head"><h2>${esc(title)}</h2><div class="tool-spacer"></div>
-        <button class="icon-btn" data-close><svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
+        <button class="icon-btn" data-close aria-label="关闭" title="关闭"><svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg></button>
       </div>
       <div class="modal-body"></div>
       <div class="modal-foot"></div>
@@ -1169,15 +1320,15 @@ function openRename() {
         <label>可用变量</label>
         <div class="var-groups" id="rnChips"></div>
       </div>
-      <div class="form-grid" style="margin-bottom:14px">
-        <div class="form-row" style="margin:0"><label>起始序号</label><input type="number" id="rnStart" value="1" min="0" step="1"></div>
-        <div class="form-row" style="margin:0"><label>预览</label><div class="hint" id="rnSummary">—</div></div>
+      <div class="form-grid mb">
+        <div class="form-row flush"><label>起始序号</label><input type="number" id="rnStart" value="1" min="0" step="1"></div>
+        <div class="form-row flush"><label>预览</label><div class="hint" id="rnSummary">—</div></div>
       </div>
-      <div style="max-height:290px;overflow:auto;border:1px solid var(--border);border-radius:9px">
+      <div class="table-box">
         <table class="preview"><thead><tr><th style="width:46%">原文件名</th><th style="width:46%">新文件名</th><th style="width:8%">状态</th></tr></thead>
-        <tbody id="rnBody"><tr><td colspan="3" style="color:var(--text-3)">加载中…</td></tr></tbody></table>
+        <tbody id="rnBody"><tr><td colspan="3" class="muted">加载中…</td></tr></tbody></table>
       </div>`,
-    foot: `<span class="hint" style="font-size:11.5px;color:var(--text-3)">重命名会保留原文件内容，仅修改文件名</span>
+    foot: `<span class="hint">重命名会保留原文件内容，仅修改文件名</span>
            <div class="tool-spacer"></div>
            <button class="btn ghost" data-close>取消</button>
            <button class="btn primary" id="rnApply" disabled>应用</button>`,
@@ -1321,11 +1472,11 @@ function openRename() {
           <td>${i.conflict ? esc(i.conflict) : (i.changed ? '改名' : '不变')}</td>
         </tr>`).join('');
       $('#rnSummary').innerHTML = bad
-        ? `<span style="color:var(--danger)">${bad} 个冲突，请调整模板</span>`
+        ? `<span class="hint warn">${bad} 个冲突，请调整模板</span>`
         : `${changed} 个将被改名，${items.length - changed} 个不变`;
       $('#rnApply').disabled = bad > 0 || changed === 0;
     } catch (e) {
-      $('#rnBody').innerHTML = `<tr><td colspan="3" style="color:var(--danger)">${esc(e.message)}</td></tr>`;
+      $('#rnBody').innerHTML = `<tr><td colspan="3" class="err">${esc(e.message)}</td></tr>`;
     }
   }, 280);
 
@@ -1363,7 +1514,7 @@ function runJob(jobId, title, onDone) {
   modal({
     title,
     body: `<div class="progress"><div id="jobBar" style="width:0"></div></div>
-           <div class="hint" id="jobMsg" style="margin-top:12px">准备中…</div>`,
+           <div class="hint mt" id="jobMsg">准备中…</div>`,
     foot: `<div class="tool-spacer"></div><button class="btn ghost" id="jobCancel">取消</button>`,
   });
 
@@ -1403,7 +1554,7 @@ function runJob(jobId, title, onDone) {
 
 /* ============================================================ export */
 function openExport() {
-  const paths = Array.from(S.sel).filter((p) => !/\.(arw|dng|cr2|nef|orf|rw2|raf|pef|srw|raw|sr2|srf|rwl)$/i.test(p));
+  const paths = Array.from(S.sel).filter((p) => !isRaw(p));
   if (!paths.length) { toast('请选择 JPG 照片（RAW 不支持导出）', 'err'); return; }
 
   const m = modal({
@@ -1411,8 +1562,8 @@ function openExport() {
     body: `
       <div class="form-row">
         <label>输出目录</label>
-        <div style="display:flex;gap:8px">
-          <input type="text" id="exDir" placeholder="点击右侧按钮选择文件夹" readonly style="flex:1">
+        <div class="inline-row grow">
+          <input type="text" id="exDir" placeholder="点击右侧按钮选择文件夹" readonly>
           <button class="btn" id="exPick">选择…</button>
         </div>
       </div>
@@ -1422,15 +1573,19 @@ function openExport() {
         <div class="form-row"><label>JPEG 质量</label><input type="number" id="exQuality" value="85" min="40" max="100" step="1">
           <div class="hint">建议 80–92</div></div>
       </div>
-      <div class="group-title" style="margin-top:16px">保留内容</div>
+      <div class="group-title">保留内容</div>
       <div class="keep-grid">
-        <label class="keep-item on"><input type="checkbox" id="keepParams" checked>
+        <label class="keep-item on"><span class="cb2"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>
+          <input type="checkbox" id="keepParams" checked>
           <span>拍摄参数<span class="sub">机型 / 光圈 / 快门 / ISO / 焦段</span></span></label>
-        <label class="keep-item on"><input type="checkbox" id="keepAuthor" checked>
+        <label class="keep-item on"><span class="cb2"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>
+          <input type="checkbox" id="keepAuthor" checked>
           <span>作者与版权<span class="sub">作者 / 版权 / 说明</span></span></label>
-        <label class="keep-item on"><input type="checkbox" id="keepGps" checked>
+        <label class="keep-item on"><span class="cb2"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>
+          <input type="checkbox" id="keepGps" checked>
           <span>GPS 位置<span class="sub">经纬度 / 海拔</span></span></label>
-        <label class="keep-item on"><input type="checkbox" id="keepIcc" checked>
+        <label class="keep-item on"><span class="cb2"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>
+          <input type="checkbox" id="keepIcc" checked>
           <span>ICC 色彩配置<span class="sub">关闭后广色域照片可能偏色</span></span></label>
       </div>`,
     foot: `<div class="tool-spacer"></div>
@@ -1486,7 +1641,7 @@ function openDirPicker(startPath, cb) {
     title: '选择文件夹',
     size: 'wide',
     body: `<div class="dir-path" id="dpPath">—</div>
-           <div style="display:flex;gap:8px;margin-bottom:10px">
+           <div class="inline-row mb">
              <button class="btn sm" id="dpUp">上一级</button>
              <button class="btn sm" id="dpHome">回到根目录</button>
            </div>
@@ -1509,7 +1664,7 @@ function openDirPicker(startPath, cb) {
           <svg viewBox="0 0 24 24"><path d="M4 7a2 2 0 0 1 2-2h3l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></svg>
           <span class="grow">${esc(sub.name)}</span></div>`);
       }
-      if (!rows.length) rows.push('<div class="dir-row" style="color:var(--text-3)">没有子文件夹</div>');
+      if (!rows.length) rows.push('<div class="dir-row muted">没有子文件夹</div>');
       $('#dpList').innerHTML = rows.join('');
       $$('#dpList .dir-row[data-p]').forEach((r) => { r.onclick = () => go(r.dataset.p); });
       $('#dpOk').disabled = !cur;
@@ -1534,8 +1689,9 @@ function openSettings() {
     title: '设置',
     size: 'wide',
     body: `
-      <div class="tabs" style="margin-bottom:16px">
+      <div class="tabs tabs-bar">
         <button class="tab active" data-stab="general">通用</button>
+        <button class="tab" data-stab="exiftool">ExifTool</button>
         <button class="tab" data-stab="map">地图</button>
         <button class="tab" data-stab="about">关于</button>
       </div>
@@ -1550,9 +1706,8 @@ function openSettings() {
         </div>
         <div class="group-title">窗口</div>
         <div class="form-row">
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--text-2)">
-            <input type="checkbox" id="stNativeFrame" ${s.native_frame ? 'checked' : ''}
-                   style="width:14px;height:14px;accent-color:var(--accent)">
+          <label class="check-row">
+            <input type="checkbox" id="stNativeFrame" ${s.native_frame ? 'checked' : ''}>
             使用 Windows 系统标题栏
           </label>
           <div class="hint">默认使用自绘标题栏（无边框窗口）。如果窗口显示异常、无法拖动或缩放，勾选此项并重启程序即可恢复系统标题栏。</div>
@@ -1560,13 +1715,40 @@ function openSettings() {
         <div class="group-title">缩略图缓存</div>
         <div class="form-row">
           <div class="hint">缩略图会缓存在本机，加快二次打开速度。删除后首次浏览会重新生成。</div>
-          <div style="display:flex;gap:8px;margin-top:6px">
+          <div class="inline-row mt">
             <button class="btn" id="btnClearCache">清理缓存</button>
           </div>
         </div>
         <div class="group-title">EXIF 备份</div>
-        <div class="hint" style="margin-bottom:8px">每次写入前都会自动备份原始 EXIF，可随时回滚。</div>
-        <div id="bkList" class="dir-list" style="max-height:180px"></div>
+        <div class="hint tight">每次写入前都会自动备份原始 EXIF，可随时回滚。</div>
+        <div id="bkList" class="dir-list short"></div>
+      </div>
+      <div id="stExifTool" hidden>
+        <div class="group-title">当前状态</div>
+        <div class="kv"><span class="k">是否已调用</span><span class="v" id="stEtState">${S.etAvailable ? '已调用' : '未调用'}</span></div>
+        <div class="kv"><span class="k">版本</span><span class="v small" id="stEtVer">${S.etAvailable ? esc(S.et.version || '未知') : '—'}</span></div>
+        <div class="kv"><span class="k">来源</span><span class="v small" id="stEtSrc">${S.etAvailable ? esc(S.et.source || '自动查找') : '—'}</span></div>
+        <div class="kv"><span class="k">路径</span><span class="v small" id="stEtFile">${S.etAvailable ? esc(S.et.path || '') : '—'}</span></div>
+
+        <div class="group-title">这个功能做什么</div>
+        <div class="hint">ExifTool 在本程序里<b>只用于读取</b>，不参与写入。它的作用是让 CR3（佳能 RAW）的 EXIF 读得更完整：内置解析器已经能读出拍摄时间、光圈、快门、ISO、焦距、镜头、作者、版权、GPS 等常用字段；接上 ExifTool 后还能补上机身序列号、镜头序列号、子秒时间、时区偏移、色彩空间等更细的标签。</div>
+        <div class="hint tight"><b>所有 RAW 文件（含 CR3、ARW、NEF、DNG 等）都只读</b>，本程序不会修改它们的任何内容。要改 EXIF 请用 JPG。<b>程序不内置 ExifTool</b>（它会让安装体积多出约 27 MB），需要你自己放一份。</div>
+
+        <div class="group-title">配置方式</div>
+        <div class="form-row">
+          <label>ExifTool 路径</label>
+          <div class="inline-row grow">
+            <input type="text" id="stEtPath" value="${esc(s.exiftool_path || '')}" placeholder="留空则自动在程序目录里查找" spellcheck="false">
+            <button class="btn" id="btnEtPick">选择…</button>
+            <button class="btn ghost" id="btnEtTest">检测</button>
+          </div>
+          <div class="hint" id="stEtStatus">${etStatusText()}</div>
+        </div>
+        <div class="hint tight">留空时会自动在两处找：① 程序目录下的 <code>exiftool.exe</code>；② 程序目录下的 <code>exiftool-版本号\</code> 文件夹（官方压缩包解压后的原样结构，不用改名）。也可以用上面的「选择…」直接指定。<b>程序不会去系统 PATH 里找</b>，所以机器上别的软件带的 ExifTool 不会被误用。</div>
+        <div class="inline-row">
+          <button class="btn ghost" id="btnEtTut">查看配置教程</button>
+        </div>
+        <div id="etTutBox" class="tut-box" hidden></div>
       </div>
       <div id="stMap" hidden>
         <div class="form-row">
@@ -1577,18 +1759,19 @@ function openSettings() {
           <label>安全密钥（securityJsCode）</label>
           <input type="text" id="stSecret" value="${esc(s.amap_secret || '')}" placeholder="32 位字符" spellcheck="false">
         </div>
-        <div style="display:flex;gap:8px;margin-bottom:8px">
+        <div class="inline-row mb">
           <button class="btn" id="btnTestMap">测试连接</button>
           <button class="btn ghost" id="btnTut">查看获取教程</button>
         </div>
         <div class="map-status" id="mapStatus">未配置时仍可使用全部 EXIF 功能，仅地图选点不可用。</div>
-        <div id="tutBox" hidden style="margin-top:14px;border-top:1px solid var(--border);padding-top:6px"></div>
+        <div id="tutBox" class="tut-box" hidden></div>
       </div>
       <div id="stAbout" hidden>
         <div class="group-title">ExifCraft</div>
-        <div class="kv"><span class="k">版本</span><span class="v">1.3.0</span></div>
-        <div class="kv"><span class="k">支持</span><span class="v">JPG 读写 EXIF · ARW / DNG 只读</span></div>
-        <div class="kv"><span class="k">配置</span><span class="v" style="font-size:11px">%LOCALAPPDATA%\\ExifCraft</span></div>
+        <div class="kv"><span class="k">版本</span><span class="v">2.0.0</span></div>
+        <div class="kv"><span class="k">支持</span><span class="v">JPG 读写 EXIF · RAW（含 CR3）只读</span></div>
+        <div class="kv"><span class="k">ExifTool</span><span class="v small">${S.etAvailable ? '已调用 v' + esc(S.et.version || '') + '（仅用于读取 CR3）' : '未调用（可选）'}</span></div>
+        <div class="kv"><span class="k">配置</span><span class="v small">%LOCALAPPDATA%\\ExifCraft</span></div>
         <div class="group-title">快捷键</div>
         <div class="kv"><span class="k">方向键</span><span class="v">移动选择</span></div>
         <div class="kv"><span class="k">Shift + 方向键</span><span class="v">扩展选择</span></div>
@@ -1609,6 +1792,7 @@ function openSettings() {
     t.onclick = () => {
       $$('[data-stab]').forEach((x) => x.classList.toggle('active', x === t));
       $('#stGeneral').hidden = t.dataset.stab !== 'general';
+      $('#stExifTool').hidden = t.dataset.stab !== 'exiftool';
       $('#stMap').hidden = t.dataset.stab !== 'map';
       $('#stAbout').hidden = t.dataset.stab !== 'about';
     };
@@ -1629,6 +1813,50 @@ function openSettings() {
 
   loadBackups();
 
+  const syncEtStatus = () => {
+    const el = $('#stEtStatus');
+    if (el) el.textContent = etStatusText();
+    syncEtFields();
+  };
+
+  $('#btnEtPick').onclick = async () => {
+    const api2 = wapi();
+    if (!api2 || !api2.pick_file) { toast('当前环境无法弹出文件对话框，请手动填写路径', 'err'); return; }
+    try {
+      const p = await api2.pick_file();
+      if (p) { $('#stEtPath').value = p; toast('已选择，记得点保存', 'ok'); }
+    } catch (e) { toast(e.message || String(e), 'err'); }
+  };
+
+  $('#btnEtTest').onclick = async () => {
+    const p = $('#stEtPath').value.trim();
+    if (p) {
+      await api('/api/settings', { method: 'POST', body: JSON.stringify({ exiftool_path: p }) }).catch(() => {});
+      S.settings.exiftool_path = p;
+    }
+    await refreshExiftool();
+    syncEtStatus();
+    toast(S.etAvailable
+      ? `已调用 ExifTool ${S.et.version || ''}（${S.et.source || '自动查找'}）`
+      : '没有找到 ExifTool：CR3 仍可查看常用 EXIF，只是细节标签少一些', S.etAvailable ? 'ok' : '');
+  };
+
+  $('#btnEtTut').onclick = () => {
+    const box = $('#etTutBox');
+    if (!box.hidden) { box.hidden = true; return; }
+    box.hidden = false;
+    if (!box.dataset.loaded) {
+      box.appendChild($('#tplExifToolTut').content.cloneNode(true));
+      box.dataset.loaded = '1';
+      $$('[data-external]', box).forEach((a2) => {
+        a2.onclick = (e) => {
+          e.preventDefault();
+          api('/api/open-external', { method: 'POST', body: JSON.stringify({ url: a2.href }) });
+        };
+      });
+    }
+  };
+
   $('#btnTut').onclick = () => {
     const box = $('#tutBox');
     if (!box.hidden) { box.hidden = true; return; }
@@ -1646,13 +1874,13 @@ function openSettings() {
     const key = $('#stKey').value.trim();
     const secret = $('#stSecret').value.trim();
     const st = $('#mapStatus');
-    if (!key || !secret) { st.innerHTML = '<span style="color:var(--danger)">Key 与安全密钥都要填写</span>'; return; }
+    if (!key || !secret) { st.innerHTML = '<span class="hint warn">Key 与安全密钥都要填写</span>'; return; }
     st.textContent = '正在测试…';
     try {
       await loadAmap(key, secret);
-      st.innerHTML = '<span style="color:var(--ok)">连接成功，地图可以正常加载</span>';
+      st.innerHTML = '<span class="hint ok">连接成功，地图可以正常加载</span>';
     } catch (e) {
-      st.innerHTML = `<span style="color:var(--danger)">连接失败：${esc(e.message)}</span>`;
+      st.innerHTML = `<span class="hint warn">连接失败：${esc(e.message)}</span>`;
     }
   };
 
@@ -1664,11 +1892,31 @@ function openSettings() {
         amap_secret: $('#stSecret').value.trim(),
         theme: document.documentElement.dataset.theme,
         native_frame: $('#stNativeFrame').checked,
+        exiftool_path: $('#stEtPath').value.trim(),
       }),
     });
+    await refreshExiftool();
     closeModal();
     toast('设置已保存', 'ok');
   };
+}
+
+function etStatusText() {
+  if (S.etAvailable) {
+    const v = S.et.version ? `v${S.et.version}` : '已就绪';
+    const src = S.et.source ? `（${S.et.source}）` : '';
+    return `已调用 ExifTool ${v}${src}，CR3 的 EXIF 会读得更完整`;
+  }
+  return '未调用 ExifTool。CR3 仍可正常查看常用 EXIF（内置解析器），只是细节标签少一些。';
+}
+
+/* 刷新 ExifTool 页上那几个只读展示行 */
+function syncEtFields() {
+  const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
+  set('stEtState', S.etAvailable ? '已调用' : '未调用');
+  set('stEtVer', S.etAvailable ? (S.et.version || '未知') : '—');
+  set('stEtSrc', S.etAvailable ? (S.et.source || '自动查找') : '—');
+  set('stEtFile', S.etAvailable ? (S.et.path || '') : '—');
 }
 
 async function loadBackups() {
@@ -1676,7 +1924,7 @@ async function loadBackups() {
   if (!box) return;
   try {
     const { items } = await api('/api/backups');
-    if (!items.length) { box.innerHTML = '<div class="dir-row" style="color:var(--text-3)">暂无备份</div>'; return; }
+    if (!items.length) { box.innerHTML = '<div class="dir-row muted">暂无备份</div>'; return; }
     box.innerHTML = items.map((b) => `
       <div class="dir-row">
         <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
@@ -1692,7 +1940,7 @@ async function loadBackups() {
         renderGrid(true);
       };
     });
-  } catch (e) { box.innerHTML = `<div class="dir-row" style="color:var(--danger)">${esc(e.message)}</div>`; }
+  } catch (e) { box.innerHTML = `<div class="dir-row err">${esc(e.message)}</div>`; }
 }
 
 /* ============================================================ amap */
@@ -1776,7 +2024,7 @@ async function openMapPicker(onPick) {
              <div class="map-tip">点击地图任意位置放置标记</div>
            </div>
            <div class="map-coord">WGS-84：<b id="mcLat">—</b><b id="mcLng"></b>
-             <span style="color:var(--text-3);font-size:11.5px">（写入 EXIF 的坐标）</span></div>
+             <span class="hint">（写入 EXIF 的坐标）</span></div>
            <div class="map-status" id="mapMsg">在地图上点击选择位置，或搜索地点后拖动标记。</div>`,
     foot: `<div class="tool-spacer"></div>
            <button class="btn ghost" data-close>取消</button>
@@ -1813,7 +2061,7 @@ async function openMapPicker(onPick) {
           setPoint(p.location.getLng(), p.location.getLat());
           $('#mapMsg').textContent = `已定位：${p.name}${p.address ? ' · ' + p.address : ''}`;
         } else {
-          $('#mapMsg').innerHTML = '<span style="color:var(--danger)">没有找到该地点，换个关键词试试</span>';
+          $('#mapMsg').innerHTML = '<span class="hint warn">没有找到该地点，换个关键词试试</span>';
         }
       });
     };
@@ -1832,8 +2080,8 @@ async function openMapPicker(onPick) {
       $('#mapMsg').textContent = '已定位到这张照片现有的坐标，可直接拖动标记微调。';
     }
   } catch (e) {
-    $('#mapMsg').innerHTML = `<span style="color:var(--danger)">${esc(e.message)}</span><br>
-      <span style="font-size:11px">可在「设置 → 地图」查看获取 Key 的详细教程；也可以直接手动输入经纬度。</span>`;
+    $('#mapMsg').innerHTML = `<span class="hint warn">${esc(e.message)}</span><br>
+      <span class="hint big">可在「设置 → 地图」查看获取 Key 的详细教程；也可以直接手动输入经纬度。</span>`;
   }
 
   $('#mapOk').onclick = () => {
@@ -1975,6 +2223,92 @@ function stepViewer(d) {
   S.viewer.ox = 0; S.viewer.oy = 0;
   loadViewerImage();
 }
+
+/* ============================================================ M3 交互增强（P4）
+   以下三块都是独立的附加层：不改动任何既有控制流，只是往 DOM 上叠视觉反馈。 */
+
+/* M3 ripple —— 给声明式元素叠加按压涟漪（网格 cell 与窗口按钮不做，见方案 6.1） */
+(() => {
+  const SEL = '.btn,.icon-btn,.tab,.crumb,.node,.chip,.tok-x,.keep-item,.seg button,.dir-row,.snack-action';
+  document.addEventListener('pointerdown', (e) => {
+    const el = e.target.closest(SEL);
+    if (!el) return;
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const r = el.getBoundingClientRect();
+    const d = Math.max(r.width, r.height) * 2;
+    const s = document.createElement('span');
+    s.className = 'md-ripple';
+    s.style.width = d + 'px';
+    s.style.height = d + 'px';
+    s.style.left = (e.clientX - r.left - d / 2) + 'px';
+    s.style.top = (e.clientY - r.top - d / 2) + 'px';
+    el.appendChild(s);
+    s.addEventListener('animationend', () => s.remove());
+  }, { passive: true });
+})();
+
+/* M3 tooltip —— 原生 title 保留作无障碍兜底，悬停时惰性迁移成 aria-label + data-tip 浮层
+   （惰性迁移而不是启动时全量扫：目录树/弹窗的节点是动态生成的，且部分 title 在插入之后才赋值） */
+(() => {
+  let tip = null;
+  let timer = 0;
+  const toTip = (el) => {
+    const t = el.getAttribute('title');
+    if (t) { el.setAttribute('aria-label', t); el.setAttribute('data-tip', t); el.removeAttribute('title'); }
+    return el.getAttribute('data-tip');
+  };
+  function show(el) {
+    const text = el.getAttribute('data-tip');
+    if (!text) return;
+    if (!tip) { tip = document.createElement('div'); tip.id = 'mdTip'; document.body.appendChild(tip); }
+    tip.textContent = text;
+    tip.classList.add('show');
+    const r = el.getBoundingClientRect();
+    const tr = tip.getBoundingClientRect();
+    let left = r.left + r.width / 2 - tr.width / 2;
+    left = Math.max(8, Math.min(left, innerWidth - tr.width - 8));
+    let top = r.bottom + 8;
+    if (top + tr.height > innerHeight - 8) top = r.top - tr.height - 8;
+    tip.style.left = left + 'px';
+    tip.style.top = top + 'px';
+  }
+  const hide = () => { clearTimeout(timer); if (tip) tip.classList.remove('show'); };
+  const pick = (e) => {
+    const el = e.target.closest && e.target.closest('[data-tip],[title]');
+    if (!el) return null;
+    return toTip(el) ? el : null;
+  };
+  document.addEventListener('pointerover', (e) => {
+    const el = pick(e);
+    if (!el) { hide(); return; }
+    clearTimeout(timer);
+    timer = setTimeout(() => show(el), 420);
+  }, { passive: true });
+  document.addEventListener('pointerout', (e) => {
+    const el = e.target.closest && e.target.closest('[data-tip]');
+    if (el && !el.contains(e.relatedTarget)) hide();
+  }, { passive: true });
+  document.addEventListener('focusin', (e) => { const el = pick(e); if (el) show(el); });
+  document.addEventListener('focusout', hide);
+  document.addEventListener('pointerdown', hide, { passive: true });
+  addEventListener('scroll', hide, { passive: true, capture: true });
+  addEventListener('blur', hide);
+})();
+
+/* M3 top app bar —— 内容滚动后顶栏升起阴影与容器色 */
+(() => {
+  const bar = $('#toolbar');
+  const sc = $('#gridScroll');
+  if (!bar || !sc) return;
+  let raf = 0;
+  sc.addEventListener('scroll', () => {
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      bar.classList.toggle('elevated', sc.scrollTop > 2);
+    });
+  }, { passive: true });
+})();
 
 /* ============================================================ go */
 init();

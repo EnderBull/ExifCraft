@@ -51,7 +51,7 @@
       <input id="zoom" type="range" min="120" max="300" step="4" value="168">
     </div>
 
-    <button class="icon-btn" id="btnSettings" title="设置">
+    <button class="icon-btn filled" id="btnSettings" title="设置">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
     </button>
 
@@ -72,15 +72,13 @@
   <main id="main">
     <aside id="sidebar">
       <div class="panel-head">
-        <span>目录</span>
-        <button class="icon-btn sm" id="btnAddRoot" title="打开任意文件夹">
-          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
-        </button>
-      </div>
-      <div class="sidebar-tools">
-        <button class="switch-row" id="btnRecursive" title="同时显示所有子文件夹中的照片">
+        <span class="panel-title">目录</span>
+        <button class="switch-row" id="btnRecursive" role="switch" aria-checked="false" title="同时显示所有子文件夹中的照片">
           <span class="switch"><i></i></span>
           <span class="switch-label">含子目录</span>
+        </button>
+        <button class="icon-btn sm" id="btnAddRoot" title="打开任意文件夹">
+          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
         </button>
       </div>
       <div id="tree" class="tree"></div>
@@ -101,14 +99,17 @@
 
     <aside id="inspector">
       <div class="panel-head">
-        <div class="tabs">
-          <button class="tab active" data-tab="info">信息</button>
-          <button class="tab" data-tab="edit">编辑</button>
+        <div class="tabs" role="tablist">
+          <button class="tab active" role="tab" aria-selected="true" data-tab="info">信息</button>
+          <button class="tab" role="tab" aria-selected="false" data-tab="edit">编辑</button>
         </div>
       </div>
       <div id="tabInfo" class="panel-body"></div>
       <div id="tabEdit" class="panel-body" hidden></div>
     </aside>
+
+    <div class="col-rz" data-col="sw" title="拖动调整目录栏宽度（双击恢复）"></div>
+    <div class="col-rz" data-col="iw" title="拖动调整信息栏宽度（双击恢复）"></div>
   </main>
 
   <footer id="statusbar">
@@ -224,6 +225,71 @@
     <li>Key 只保存在本机 <code>%LOCALAPPDATA%\ExifCraft\config.json</code>，不会上传到任何服务器。</li>
     <li>如果怀疑 Key 泄露，可在高德控制台删除该 Key 并重新创建。</li>
     <li>不填 Key 也能正常使用全部 EXIF 功能，只是无法使用地图选点，可手动输入经纬度。</li>
+  </ul>
+</div>
+</template>
+
+<template id="tplExifToolTut">
+<div class="tutorial">
+  <h3>第一步 · 先搞清楚要不要装</h3>
+  <ul>
+    <li>本程序<b>不内置</b> ExifTool，装不装都能正常用：JPG 的读写、所有照片的浏览、CR3 的常用 EXIF 显示都是内置实现的。</li>
+    <li>装了之后唯一的区别：<b>CR3 能多读出一些细节标签</b>（机身序列号、镜头序列号、子秒时间、时区偏移、色彩空间、焦平面分辨率等）。</li>
+    <li>ExifTool 在本程序里<b>只读不写</b>。所有 RAW（含 CR3）在任何情况下都不会被修改。</li>
+  </ul>
+
+  <h3>第二步 · 下载</h3>
+  <ol>
+    <li>打开 <a href="https://exiftool.org/" data-external>exiftool.org</a>，页面顶部就是最新版下载链接。</li>
+    <li>Windows 用户下载 <b>「Windows Executable」</b>（文件名形如 <code>exiftool-13.59_64.zip</code>）。<b>不要</b>下 Perl 源码包，那个还需要另装 Perl。</li>
+    <li>把 zip 解压，得到一个形如 <code>exiftool-13.59_64</code> 的文件夹，里面有 <code>exiftool.exe</code> 和 <code>exiftool_files</code> 文件夹。</li>
+    <li><b>整个文件夹要一起留着</b>：<code>exiftool.exe</code> 离开 <code>exiftool_files</code> 就跑不起来。</li>
+  </ol>
+
+  <h3>第三步 · 放到程序目录（推荐）</h3>
+  <ol>
+    <li>把解压出来的整个文件夹拷到 <code>ExifCraft.exe</code> 旁边，也就是程序目录下。最终结构是：
+      <pre>ExifCraft\
+├─ ExifCraft.exe
+├─ _internal\
+└─ exiftool-13.59_64\
+   ├─ exiftool.exe
+   └─ exiftool_files\</pre>
+    </li>
+    <li>或者把 <code>exiftool.exe</code> 连同 <code>exiftool_files</code> 一起直接摊平放进程序目录，同样能被找到。</li>
+    <li>回到本页点「检测」，状态变成「已调用」就配置好了，来源会显示「程序目录」。</li>
+  </ol>
+
+  <h3>第四步 · 或者手动指定路径</h3>
+  <ol>
+    <li>不想把文件放进程序目录的，可以放在任意位置（比如 <code>D:\Tools\exiftool\exiftool.exe</code>）。</li>
+    <li>点输入框右边的「选择…」，指到 <code>exiftool.exe</code> 上。</li>
+    <li>点「检测」确认，再点设置窗口右下角的「保存」。</li>
+    <li>指定路径的优先级最高，会盖过程序目录里的同名文件。</li>
+  </ol>
+
+  <h3>查找顺序</h3>
+  <ol>
+    <li>设置里指定的路径（如果填了，优先级最高）</li>
+    <li>程序目录下的 <code>exiftool.exe</code></li>
+    <li>程序目录下任何以 <code>exiftool</code> 开头的子文件夹里的 <code>exiftool.exe</code></li>
+  </ol>
+  <p class="hint tight">程序<b>不会</b>去系统 PATH 里找 ExifTool，这样做是为了避免误用你机器上其他软件自带的那一份。</p>
+
+  <h3>常见问题</h3>
+  <table class="err-table">
+    <tr><td>检测不到，但 exe 明明在</td><td>大概率只拷了 <code>exiftool.exe</code>、没拷 <code>exiftool_files</code>。这个文件夹里是 Perl 运行时和模块，缺了会直接报错退出。</td></tr>
+    <tr><td>提示「没有找到 ExifTool」</td><td>CR3 依然能看到常用的拍摄参数、镜头、作者、GPS，用的是程序内置的解析器。只是细节标签会少一些，不影响任何其他功能。</td></tr>
+    <tr><td>版本一栏是「未知」</td><td><code>exiftool.exe -ver</code> 没能跑通，通常是杀软拦截了子进程，或文件被占用。把它加入信任列表再试。</td></tr>
+    <tr><td>换了位置要重新设吗</td><td>放在程序目录里的不需要；手动指定过绝对路径的，移动文件后要重新选一次。</td></tr>
+    <tr><td>会不会拖慢启动</td><td>不会。程序只在首次需要读 CR3 时调用一次 ExifTool 探测版本，结果会缓存。</td></tr>
+  </table>
+
+  <h3>关于「只读」</h3>
+  <ul>
+    <li>JPG 走程序内置的无损写入（只替换 EXIF 段，不重压缩图像），写入前自动备份，可一键回滚。</li>
+    <li><b>所有 RAW 都只读</b>：CR3、ARW、NEF、DNG、CR2、ORF、RW2 等等，一概不改。这是有意的设计——RAW 容器结构复杂，用通用工具改写有损坏原片的风险。</li>
+    <li>要在 RAW 上写元数据，请用相机厂商的原厂软件，或直接拿 ExifTool 命令行操作，并自行承担风险。</li>
   </ul>
 </div>
 </template>
