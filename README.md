@@ -29,7 +29,7 @@
 
 ## 下载
 
-到 [Releases](../../releases/latest) 页面下载 **ExifCraft-v2.0.0-win64-portable.zip**（绿色版，解压即用，无需安装）。
+到 [Releases](../../releases/latest) 页面下载 **ExifCraft-v2.1.0-win64-portable.zip**（绿色版，解压即用，无需安装）。
 
 解压后双击 `ExifCraft.exe`。首次启动会自动创建配置目录 `%LOCALAPPDATA%\ExifCraft`：
 
@@ -49,7 +49,7 @@ backups/        每次写入前的 EXIF 备份
 - 中间缩略图网格，虚拟滚动，上万张也不卡；缩略图按**当前视口优先级**加载，滚到哪先加载哪
 - 双击进入大图：缩放、拖拽、← → 切换、`I` 叠加显示 EXIF
 - 「含子目录」开关：一键把整个文件夹树里的照片铺平显示
-- 支持 JPG 与常见 RAW（CR3 / ARW / DNG / CR2 / NEF / ORF / RW2），RAW 直接用文件内嵌的 JPEG 预览
+- 支持 JPG 与主流 RAW（佳能 CR3、富士 RAF、哈苏 3FR、飞思 IIQ、尼康 NEF、宾得 PEF、松下 RW2，以及 ARW / DNG / CR2 / ORF / SRW 等），RAW 直接用文件内嵌的 JPEG 预览
 
 ### 改 EXIF（只改 JPG）
 
@@ -149,12 +149,18 @@ pyinstaller --noconfirm --clean ExifCraft.spec
 | 格式 | 浏览 | 读 EXIF | 写 EXIF | 导出 |
 |---|---|---|---|---|
 | JPG / JPEG | ✅ | ✅ | ✅ | ✅ |
-| ARW（索尼） | ✅ | ✅ | ❌ | ❌ |
-| DNG（大疆） | ✅ | ✅ | ❌ | ❌ |
-| CR2 / NEF / ORF / RW2 等 | ✅ | ✅ | ❌ | ❌ |
 | CR3（佳能） | ✅ | ✅ | ❌ | ❌ |
+| RAF（富士） | ✅ | ✅ | ❌ | ❌ |
+| 3FR（哈苏） | ✅ | ✅ | ❌ | ❌ |
+| IIQ（飞思） | ✅ | ✅ | ❌ | ❌ |
+| NEF（尼康）/ PEF（宾得）/ RW2（松下） | ✅ | ✅ | ❌ | ❌ |
+| ARW（索尼）/ DNG / CR2 / ORF / SRW 等 | ✅ | ✅ | ❌ | ❌ |
 
-RAW 的缩略图和大图直接读取文件内嵌的 JPEG 预览，不解码原始像素，所以速度很快。**所有 RAW（含 CR3/ARW/NEF/DNG/CR2/ORF/RW2）都只读**，任何写入操作都会自动跳过 —— 这是有意的设计，不是缺失。
+RAW 的缩略图和大图直接读取文件内嵌的 JPEG 预览，不解码原始像素，所以速度很快（30 张共 2 GB 的混品牌样片，首次生成全部缩略图约 1 秒）。**所有 RAW（CR3 / RAF / 3FR / IIQ / NEF / PEF / RW2 / ARW / DNG / CR2 / ORF …）都只读**，任何写入操作都会自动跳过 —— 这是有意的设计，不是缺失。
+
+信息面板的「尺寸」显示**实际像素**（裁掉边缘暗角后的传感器尺寸，与 ExifTool、Lightroom 同口径），不是内嵌预览的尺寸。少数格式的内嵌图很小（飞思 IIQ 文件里只有一张 640 × 480），此时信息面板会多一行「内嵌预览 640 × 480（文件里只有这么大）」。
+
+富士 RAF 的 EXIF 藏在文件头的内嵌 JPEG 里（exifread 直接读 RAF 容器会返回空），程序会自动取出那段 JPEG 再解析，所以不需要额外工具就能显示完整的拍摄参数。
 
 CR3 的 EXIF 由内置的 ISO BMFF 解析器读取（拍摄时间、光圈、快门、ISO、焦距、镜头、作者、版权、GPS 等常用字段都在）。想读到更细的标签（机身序列号、镜头编号等），可以自备一份 [ExifTool](https://exiftool.org/) 放到程序目录，它**只用于读取，不参与写入**。
 
@@ -182,6 +188,12 @@ CR3 的 EXIF 由内置的 ISO BMFF 解析器读取（拍摄时间、光圈、快
 | ✅ **佳能 CR3 支持** | 内置 ISO BMFF 解析器读缩略图、内嵌大图预览与 EXIF；CR3 与其余 RAW 一样只读 |
 | ✅ **ExifTool 可选接入** | 检测到用户自备 ExifTool 时用它把 CR3 的 EXIF 读得更完整；只读、不接管写入、不内置（体积 +0）、不查系统 PATH |
 
+**已在 2.1 完成的**
+
+| 计划 | 说明 |
+|---|---|
+| ✅ **更多品牌 RAW** | 富士 RAF、哈苏 3FR、飞思 IIQ、宾得 PEF 全部支持浏览与 EXIF；新容器的内嵌预览与真实尺寸解析都在 `core/rawimg.py` 里，零新增依赖，体积不变（仍是 62 文件 / 35 MB） |
+
 **暂不做**
 
 | 计划 | 说明 |
@@ -199,7 +211,7 @@ CR3 的 EXIF 由内置的 ISO BMFF 解析器读取（拍摄时间、光圈、快
 正常行为。所有 RAW（含 CR3）只读，只改 JPG。
 
 **CR3 的 EXIF 比别的软件少几项？**
-内置解析器覆盖常用字段（拍摄时间、光圈、快门、ISO、焦距、镜头、作者、版权、GPS）。想更全就把一份 [ExifTool](https://exiftool.org/) 解压到 `ExifCraft.exe` 旁边，程序会自动发现它并用它读取 —— 只读，不会写入任何 RAW。
+内置解析器覆盖常用字段（拍摄时间、光圈、快门、ISO、焦距、镜头、作者、版权、GPS）。富士 RAF 走文件头内嵌 JPEG 解析，字段同样完整。想更全就把一份 [ExifTool](https://exiftool.org/) 解压到 `ExifCraft.exe` 旁边，程序会自动发现它并用它读取 —— 只读，不会写入任何 RAW。
 
 **改完时间后排序没变？**
 按「修改时间」排序用的是文件系统时间，不是 EXIF 拍摄时间。切换到按名称排序，或重新进入目录。
@@ -230,7 +242,8 @@ ExifCraft/
 ├─ app.py                启动入口（本地服务 + WebView2 窗口）
 ├─ core/
 │  ├─ server.py          本地 HTTP 服务，仅监听 127.0.0.1，带会话令牌
-│  ├─ media.py           目录扫描、缩略图生成与缓存、RAW 内嵌预览提取
+│  ├─ media.py           目录扫描、缩略图生成与缓存
+│  ├─ rawimg.py          各品牌 RAW 的内嵌预览与真实尺寸提取（RAF / 3FR / NEF / PEF / RW2 / IIQ / CR3）
 │  ├─ exifio.py          EXIF 读取 / 无损写入 / 备份回滚
 │  ├─ ops.py             批量重命名、缩放导出、任务进度
 │  ├─ coords.py          WGS-84 ↔ GCJ-02 坐标转换

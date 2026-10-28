@@ -11,14 +11,17 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
-from . import config
+from . import config, rawimg
 
 Image.MAX_IMAGE_PIXELS = 400_000_000
 
 JPG_EXT = {".jpg", ".jpeg", ".jpe", ".jfif"}
-RAW_EXT = {".arw", ".srf", ".sr2", ".dng", ".raw", ".cr2", ".cr3", ".nef", ".orf", ".rw2", ".raf", ".pef", ".srw", ".rwl"}
+RAW_EXT = {".arw", ".srf", ".sr2", ".dng", ".raw", ".cr2", ".cr3", ".nef", ".orf", ".rw2", ".raf",
+           ".pef", ".srw", ".rwl", ".3fr", ".iiq"}
 # CR3 是 ISO BMFF 容器（非 TIFF），写入需重建整段盒结构，因此和其余 RAW 一样只读。
 CR3_EXT = {".cr3"}
+# RAF 容器 exifread 读不了，EXIF 要从文件头里的内嵌 JPEG 取。
+RAF_EXT = {".raf"}
 ALL_EXT = JPG_EXT | RAW_EXT
 
 THUMB_MAX = 512
@@ -42,6 +45,10 @@ def is_photo(path: str) -> bool:
 
 def is_cr3(path: str) -> bool:
     return os.path.splitext(path)[1].lower() in CR3_EXT
+
+
+def is_raf(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() in RAF_EXT
 
 
 # ---------------------------------------------------------------- 缩略图缓存
@@ -71,50 +78,21 @@ def _atomic_write(path: Path, data: bytes) -> None:
 # ---------------------------------------------------------------- RAW 预览
 
 def extract_raw_preview(path: str) -> bytes | None:
-    """扫描 RAW 文件内嵌的 JPEG 预览（相机写入的最大一张），返回 JPEG 字节。"""
-    try:
-        size = os.path.getsize(path)
-        if size < 1024:
-            return None
-        with open(path, "rb") as f:
-            with mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-                best = (0, 0, 0)  # (length, start, end)
-                pos = 0
-                found = 0
-                while found < 40:
-                    start = mm.find(b"\xff\xd8\xff", pos)
-                    if start < 0:
-                        break
-                    end = mm.find(b"\xff\xd9", start + 3)
-                    if end < 0:
-                        break
-                    end += 2
-                    length = end - start
-                    if length > best[0]:
-                        best = (length, start, end)
-                    pos = end
-                    found += 1
-                if best[0] < 2048:
-                    return None
-                return bytes(mm[best[1]:best[2]])
-    except Exception:
-        return None
+    """取 RAW 里能解码的那段 JPEG（相机写入的最大一张），拿不到返回 None。
+
+    各品牌容器差异见 core/rawimg.py：RAF 读头部偏移，NEF/PEF/3FR 走 TIFF IFD，
+    CR3/RW2 靠 SOI/EOI 快扫；Phase One IIQ 只有未压缩 strip，没有 JPEG。
+    """
+    return rawimg.first_jpeg(path)
 
 
-def _open_image(path: str, allow_raw_preview: bool = True) -> Image.Image | None:
-    kind = kind_of(path)
-    if kind == "raw":
+def _open_image(path: str, allow_raw_preview: bool = True, max_side: int = 2560) -> Image.Image | None:
+    """打开图片。RAW 走内嵌预览，并按 max_side 让 JPEG 解码器在 DCT 域先降采样。"""
+    if kind_of(path) == "raw":
         if not allow_raw_preview:
             return None
-        data = extract_raw_preview(path)
-        if not data:
-            return None
-        try:
-            img = Image.open(io.BytesIO(data))
-            img.load()
-            return img
-        except Exception:
-            return None
+        got = rawimg.first_image(path, max_side)
+        return got[0] if got else None
     try:
         img = Image.open(path)
         img.load()
@@ -146,7 +124,7 @@ def get_thumb(path: str) -> bytes:
         except OSError:
             pass
     with _SEM:
-        img = _open_image(path)
+        img = _open_image(path, max_side=THUMB_MAX)
         if img is None:
             raise FileNotFoundError(path)
         data = _encode(img, THUMB_MAX, 82)
@@ -167,7 +145,7 @@ def get_preview(path: str) -> bytes:
         except OSError:
             pass
     with _SEM:
-        img = _open_image(path)
+        img = _open_image(path, max_side=PREVIEW_MAX)
         if img is None:
             raise FileNotFoundError(path)
         data = _encode(img, PREVIEW_MAX, 90)
@@ -180,17 +158,22 @@ def get_preview(path: str) -> bytes:
 
 
 def image_size(path: str) -> tuple[int, int] | None:
+    """像素尺寸。RAW 优先取容器记录的传感器尺寸，取不到才退回内嵌预览尺寸。"""
     try:
         if kind_of(path) == "raw":
-            data = extract_raw_preview(path)
-            if not data:
-                return None
-            with Image.open(io.BytesIO(data)) as im:
-                return im.size
+            size = rawimg.full_size(path)
+            if size:
+                return size
+            return rawimg.preview_size(path)
         with Image.open(path) as im:
             return im.size
     except Exception:
         return None
+
+
+def preview_only_size(path: str) -> tuple[int, int] | None:
+    """RAW 内嵌预览的尺寸（用于提示「此格式内嵌预览仅 640x480」这类场景）。"""
+    return rawimg.preview_size(path)
 
 
 def clear_cache() -> tuple[int, int]:

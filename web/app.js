@@ -2,8 +2,8 @@
 'use strict';
 
 const TOKEN = document.querySelector('meta[name="pm-token"]').content;
-/* RAW 格式统一正则（含佳能 CR3）。所有 RAW（含 CR3）一律只读；ExifTool 只用于读取。 */
-const RAW_RE = /\.(arw|dng|cr2|cr3|nef|orf|rw2|raf|pef|srw|raw|sr2|srf|rwl)$/i;
+/* RAW 格式统一正则（佳能 CR3 / 富士 RAF / 哈苏 3FR / 飞思 IIQ 等）。所有 RAW 一律只读。 */
+const RAW_RE = /\.(arw|dng|cr2|cr3|nef|orf|rw2|raf|pef|srw|raw|sr2|srf|rwl|3fr|iiq)$/i;
 const CR3_RE = /\.cr3$/i;
 const isRaw = (p) => RAW_RE.test(p);
 const isCr3 = (p) => CR3_RE.test(p);
@@ -896,11 +896,20 @@ function renderInfo() {
   if (!m) { box.innerHTML = '<div class="multi-note">读取中…</div>'; return; }
   const f = m.file;
 
+  // 少数格式（如飞思 IIQ）容器里最大的内嵌图只有 640×480，缩略图和大图都只能放大，
+  // 这里直说一句，免得用户以为是程序写坏了。
+  let previewNote = '';
+  const pvArea = (f.preview_width || 0) * (f.preview_height || 0);
+  if (f.kind === 'raw' && pvArea && pvArea < f.width * f.height * 0.5) {
+    previewNote = `${f.preview_width} × ${f.preview_height}（文件里只有这么大）`;
+  }
+
   const groups = [
     ['文件', [
       ['文件名', f.name],
       ['格式', f.kind === 'raw' ? 'RAW（只读）' : 'JPG'],
       ['尺寸', f.width ? `${f.width} × ${f.height}` : '—'],
+      ...(previewNote ? [['内嵌预览', previewNote]] : []),
       ['大小', fmtSize(f.size)],
       ['修改时间', fmtDate(f.mtime)],
     ]],
@@ -1768,7 +1777,7 @@ function openSettings() {
       </div>
       <div id="stAbout" hidden>
         <div class="group-title">ExifCraft</div>
-        <div class="kv"><span class="k">版本</span><span class="v">2.0.0</span></div>
+        <div class="kv"><span class="k">版本</span><span class="v">2.1.0</span></div>
         <div class="kv"><span class="k">支持</span><span class="v">JPG 读写 EXIF · RAW（含 CR3）只读</span></div>
         <div class="kv"><span class="k">ExifTool</span><span class="v small">${S.etAvailable ? '已调用 v' + esc(S.et.version || '') + '（仅用于读取 CR3）' : '未调用（可选）'}</span></div>
         <div class="kv"><span class="k">配置</span><span class="v small">%LOCALAPPDATA%\\ExifCraft</span></div>

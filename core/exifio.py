@@ -215,6 +215,15 @@ def read_meta(path: str) -> dict:
                 tags, cr3_gps = _read_cr3_tags(path)
             except Exception:
                 tags = {}
+    elif media.is_raf(path):
+        # exifread 不认识 RAF 容器（会静默返回空字典），但文件头里的内嵌 JPEG
+        # 自带完整 EXIF：取那段 JPEG 再解析，1 ms 就能拿到 71 个标签。
+        try:
+            blob = media.extract_raw_preview(path)
+            if blob:
+                tags = exifread.process_file(io.BytesIO(blob), details=False, strict=False)
+        except Exception:
+            tags = {}
     else:
         try:
             with open(path, "rb") as f:
@@ -318,13 +327,20 @@ def read_meta(path: str) -> dict:
         except Exception:
             pass
 
+    # 尺寸取「实际像素」：容器记录的传感器尺寸，与 EXIF 里的大图尺寸取较大者。
+    # 各品牌这信息放的位置不一样（CR3 在 CMT1、IIQ 在 ExifIFD、3FR/NEF/PEF 在 IFD），
+    # 单独信任何一处都会得到预览尺寸或反了的宽高。
     size = media.image_size(path)
-    if media.is_cr3(path):
-        # 内嵌预览尺寸远小于传感器尺寸，CR3 优先用 CMT1 里的 ImageWidth/Length
-        w_tag = _first_num(_tag(tags, "Image ImageWidth", "EXIF ExifImageWidth"))
-        h_tag = _first_num(_tag(tags, "Image ImageLength", "EXIF ExifImageLength"))
-        if w_tag and h_tag:
-            size = (int(w_tag), int(h_tag))
+    # 同一个文件里往往同时有「缩略图尺寸」和「大图尺寸」，按面积取最大：
+    # IIQ 的 Image ImageWidth 是 640（缩略图），EXIF ExifImageWidth 才是 14204。
+    best_area = size[0] * size[1] if size else 0
+    for wk, hk in (("Image ImageWidth", "Image ImageLength"),
+                   ("EXIF ExifImageWidth", "EXIF ExifImageLength")):
+        wv, hv = _first_num(_tag(tags, wk)), _first_num(_tag(tags, hk))
+        if not (wv and hv) or wv <= 0 or hv <= 0:
+            continue
+        if wv * hv > best_area:
+            size, best_area = (int(wv), int(hv)), wv * hv
     try:
         st = os.stat(path)
         fsize = st.st_size
@@ -347,6 +363,12 @@ def read_meta(path: str) -> dict:
         "writer": "piexif" if kind == "jpg" else "",
         "et_read": bool(media.is_cr3(path) and exiftool.find()),
     }
+    if kind == "raw":
+        # IIQ 这类容器里最大的内嵌图只有 640x480，前端据此提示一句
+        pv = media.preview_only_size(path)
+        if pv:
+            file_info["preview_width"] = pv[0]
+            file_info["preview_height"] = pv[1]
 
     return {"fields": fields, "edit": edit, "gps": gps, "file": file_info}
 
