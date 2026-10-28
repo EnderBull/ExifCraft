@@ -478,7 +478,6 @@ async function navigate(path, push = true) {
     applyFilter();
     renderCrumbs(d);
     highlightTree(d.path);
-    $('#empty').hidden = d.files.length > 0;
     $('#gridScroll').scrollTop = 0;
     if (push) {
       S.history = S.history.slice(0, S.hIdx + 1);
@@ -544,6 +543,28 @@ function applyFilter() {
   S.sel.forEach((p) => { if (!files.some((f) => f.path === p)) S.sel.delete(p); });
   renderGrid(true);
   updateStatus();
+  updateEmpty();
+}
+
+/* 空状态浮层：只有「屏幕上真的什么都没显示」时才出现。
+   以前只看照片数，遇到只有子文件夹的目录，说明文字会压在文件夹卡片上。 */
+function updateEmpty() {
+  const el = $('#empty');
+  if (!el) return;
+  if (S.view.length) { el.hidden = true; return; }
+  el.hidden = false;
+  const p = el.querySelector('p');
+  const s = el.querySelector('span');
+  if (!S.path) {
+    p.textContent = '从左侧选择一个文件夹开始';
+    s.textContent = '支持 JPG / ARW / DNG';
+  } else if (S.query.trim()) {
+    p.textContent = '没有匹配的文件';
+    s.textContent = '换个关键词试试';
+  } else {
+    p.textContent = S.recursive ? '这里没有照片' : '这个文件夹是空的';
+    s.textContent = '换个文件夹看看';
+  }
 }
 
 const PAD_X = 16;
@@ -1025,63 +1046,70 @@ function renderEdit() {
   }
   const rawCount = Array.from(S.sel).filter(isRaw).length;
   const jpgCount = n - rawCount;
+  /* 选中的全是只读 RAW（没有一张 JPG）时，整块参数锁死：勾选框点不动、输入框 disabled。
+     混合选择（RAW + JPG）仍可编辑，写入时 RAW 会被自动跳过。 */
+  const locked = jpgCount === 0;
+  if (locked && S.checked.size) S.checked.clear();   // 锁定时不保留任何已勾选项
   const single = n === 1 && S.meta && S.metaPath === Array.from(S.sel)[0];
   const edit = single ? S.meta.edit : {};
 
   let html = '';
-  if (rawCount) {
+  if (locked) {
+    html += '<div class="multi-note">选中的都是 RAW 文件，<b>只读</b>：参数不可编辑，仅可查看 EXIF。要修改请选 JPG。</div>';
+  } else if (rawCount) {
     html += `<div class="multi-note">已选 ${n} 张，其中 <b>${rawCount}</b> 张是只读 RAW，写入时会自动跳过。</div>`;
-  }
-  if (!jpgCount) {
-    html += '<div class="multi-note">选中的都是 RAW 文件，<b>只读</b>，仅可查看 EXIF。修改请选择 JPG。</div>';
   }
 
   for (const g of EDIT_GROUPS) {
     html += `<div class="group-title">${g.title}</div>`;
     for (const f of g.fields) {
-      const on = S.checked.has(f.k);
+      const on = !locked && S.checked.has(f.k);
       const val = single ? (edit[f.k] ?? '') : '';
+      const dis = locked ? ' disabled' : '';
       let input = '';
       if (f.type === 'select') {
-        input = `<select data-k="${f.k}">${f.opts.map(([v, t]) =>
+        input = `<select data-k="${f.k}"${dis}>${f.opts.map(([v, t]) =>
           `<option value="${v}" ${String(val) === v ? 'selected' : ''}>${t}</option>`).join('')}</select>`;
       } else if (f.type === 'textarea') {
-        input = `<textarea data-k="${f.k}" placeholder="${f.ph || ''}">${esc(val)}</textarea>`;
+        input = `<textarea data-k="${f.k}" placeholder="${f.ph || ''}"${dis}>${esc(val)}</textarea>`;
       } else if (f.type === 'datetime') {
         const dt = val ? String(val).replace(' ', 'T') : '';
-        input = `<input type="datetime-local" step="1" data-k="${f.k}" value="${esc(dt)}">`;
+        input = `<input type="datetime-local" step="1" data-k="${f.k}" value="${esc(dt)}"${dis}>`;
       } else {
-        input = `<input type="${f.type}" data-k="${f.k}" step="${f.step || ''}" placeholder="${f.ph || ''}" value="${val === '' || val == null ? '' : esc(val)}">`;
+        input = `<input type="${f.type}" data-k="${f.k}" step="${f.step || ''}" placeholder="${f.ph || ''}" value="${val === '' || val == null ? '' : esc(val)}"${dis}>`;
       }
-      html += `<div class="field ${on ? 'on' : ''}" data-field="${f.k}">
+      html += `<div class="field ${on ? 'on' : ''}${locked ? ' locked' : ''}" data-field="${f.k}">
         <span class="cb"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>
         <div class="body"><label>${f.label}</label>${input}</div></div>`;
     }
   }
 
   html += `<div class="group-title">位置（GPS）</div>
-    <div class="field ${S.checked.has('GPS') ? 'on' : ''}" data-field="GPS">
+    <div class="field ${!locked && S.checked.has('GPS') ? 'on' : ''}${locked ? ' locked' : ''}" data-field="GPS">
       <span class="cb"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>
       <div class="body">
         <label>经纬度</label>
         <div class="gps-row">
-          <input type="number" step="0.000001" data-gps="lat" placeholder="纬度" value="${single && S.meta.gps.lat != null ? S.meta.gps.lat : ''}">
-          <input type="number" step="0.000001" data-gps="lng" placeholder="经度" value="${single && S.meta.gps.lng != null ? S.meta.gps.lng : ''}">
+          <input type="number" step="0.000001" data-gps="lat" placeholder="纬度" value="${single && S.meta.gps.lat != null ? S.meta.gps.lat : ''}"${locked ? ' disabled' : ''}>
+          <input type="number" step="0.000001" data-gps="lng" placeholder="经度" value="${single && S.meta.gps.lng != null ? S.meta.gps.lng : ''}"${locked ? ' disabled' : ''}>
         </div>
         <div class="gps-actions">
-          <button class="btn sm" id="btnMapPick">地图选点</button>
-          <button class="btn sm ghost" id="btnGpsClear">清除</button>
+          <button class="btn sm" id="btnMapPick"${locked ? ' disabled' : ''}>地图选点</button>
+          <button class="btn sm ghost" id="btnGpsClear"${locked ? ' disabled' : ''}>清除</button>
         </div>
       </div>
     </div>
     <div class="apply-bar">
-      <button class="btn primary wide" id="btnApply">应用到 ${n} 张</button>
+      <button class="btn primary wide" id="btnApply"${locked ? ' disabled' : ''}>${locked ? 'RAW 只读，不可写入' : `应用到 ${n} 张`}</button>
     </div>`;
 
   box.innerHTML = html;
 
-  $$('.field', box).forEach((el) => {
-    el.querySelector('.cb').onclick = () => {
+  const $fields = [...box.querySelectorAll('.field')];
+  $fields.forEach((el) => {
+    const cb = el.querySelector('.cb');
+    if (locked) { cb.removeAttribute('tabindex'); return; }  // 只读 RAW：勾选框完全不可交互
+    cb.onclick = () => {
       const k = el.dataset.field;
       if (S.checked.has(k)) S.checked.delete(k); else S.checked.add(k);
       el.classList.toggle('on', S.checked.has(k));
@@ -1107,6 +1135,7 @@ async function applyEdits() {
   const box = $('#tabEdit');
   const paths = Array.from(S.sel);
   const changes = {};
+  if (!paths.some((p) => !isRaw(p))) { toast('选中的都是只读 RAW，无法写入 EXIF', 'err'); return; }
 
   for (const k of S.checked) {
     if (k === 'GPS') continue;
@@ -1801,7 +1830,7 @@ function openSettings() {
       </div>
       <div id="stAbout" hidden>
         <div class="group-title">ExifCraft</div>
-        <div class="kv"><span class="k">版本</span><span class="v">2.2.0</span></div>
+        <div class="kv"><span class="k">版本</span><span class="v">2.2.1</span></div>
         <div class="kv"><span class="k">支持</span><span class="v">JPG 读写 EXIF · RAW（含 CR3）只读</span></div>
         <div class="kv"><span class="k">ExifTool</span><span class="v small">${S.etAvailable ? '已调用 v' + esc(S.et.version || '') + '（仅用于读取 CR3）' : '未调用（可选）'}</span></div>
         <div class="kv"><span class="k">配置</span><span class="v small">${esc(CONFIG_DIR_LABEL)}</span></div>

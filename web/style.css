@@ -979,18 +979,26 @@ input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 7px co
   font: var(--md-typescale-body-m);
   font-size: 12.5px;
   outline: 0;
-  transition: box-shadow var(--md-dur-short) linear, background var(--md-dur-short) linear;
+  transition: box-shadow var(--md-dur-short) linear, background var(--md-dur-short) linear,
+              opacity var(--md-dur-short) linear;
 }
 .field textarea { height: 56px; padding: 7px 10px; resize: vertical; line-height: 1.5; }
 .field input:focus, .field select:focus, .field textarea:focus {
   box-shadow: inset 0 0 0 1.5px var(--md-primary);
 }
 .field:focus-within label { color: var(--md-primary); }
-.field:not(.on) input, .field:not(.on) select, .field:not(.on) textarea {
-  background: color-mix(in oklab, var(--md-on-surface) 10%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--md-outline-variant) 45%, transparent);
-  color: color-mix(in oklab, var(--md-on-surface) 38%, transparent);
-}
+/* 未勾选的字段：整框（底色 + 描边 + 文字）一起变淡，回到 v1.4 的观感 */
+.field:not(.on) input, .field:not(.on) select, .field:not(.on) textarea { opacity: .5; }
+.field:not(.on) label { color: color-mix(in oklab, var(--md-on-surface-variant) 60%, transparent); }
+.field:not(.on) .cb { border-color: color-mix(in oklab, var(--md-on-surface-variant) 55%, transparent); }
+/* 只读 RAW：整块参数锁死，勾选框不可点、输入框 disabled */
+.field.locked { cursor: default; }
+.field.locked .cb { pointer-events: none; opacity: .38; border-style: dashed; }
+.field.locked label { opacity: .55; }
+.field.locked input, .field.locked select, .field.locked textarea { cursor: not-allowed; }
+.field.locked .gps-actions .btn { opacity: .38; pointer-events: none; }
+.field input:disabled, .field select:disabled, .field textarea:disabled { cursor: not-allowed; }
+
 .field input::placeholder { color: var(--md-on-surface-muted); }
 
 /* GPS 行：两个输入框 + 两个按钮都落在输入框那一列 */

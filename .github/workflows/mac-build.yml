@@ -14,11 +14,11 @@ on:
       version:
         description: "版本号（只用于 dmg / zip 文件名）"
         required: false
-        default: "2.2.0"
+        default: "2.2.1"
 
 env:
   # 版本号不经 shell 直接引用，避免注入
-  APP_VERSION: ${{ github.event.inputs.version || '2.2.0' }}
+  APP_VERSION: ${{ github.event.inputs.version || '2.2.1' }}
 
 jobs:
   macos-arm64:
