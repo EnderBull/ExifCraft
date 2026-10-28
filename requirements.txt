@@ -1,0 +1,21 @@
+# 运行时依赖（打包与开发共用）
+pywebview==6.2.1
+pillow==13.0.0
+piexif==1.1.3
+ExifRead==3.5.1
+
+# Windows 上的 WebView2 后端
+pythonnet==3.2.1; sys_platform == "win32"
+clr_loader==0.3.1; sys_platform == "win32"
+
+# macOS 上的 WKWebView 后端（pywebview 会自己拉起，这里显式写明便于打包排查）
+# pywebview 的 Cocoa 后端需要；版本区间放宽，跟随 pywebview 6.2.1 的 >=9.0 要求
+pyobjc-core>=10.3,<13; sys_platform == "darwin"
+pyobjc-framework-Cocoa>=10.3,<13; sys_platform == "darwin"
+pyobjc-framework-WebKit>=10.3,<13; sys_platform == "darwin"
+pyobjc-framework-Quartz>=10.3,<13; sys_platform == "darwin"
+pyobjc-framework-security>=10.3,<13; sys_platform == "darwin"
+pyobjc-framework-UniformTypeIdentifiers>=10.3,<13; sys_platform == "darwin"
+
+# 打包
+pyinstaller==6.22.3

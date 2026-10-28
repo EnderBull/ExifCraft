@@ -19,12 +19,29 @@ if getattr(sys, "frozen", False):
     WEB_DIR = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "web"
 else:
     WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+# 前端据此切分隔符、快捷键与文案（mac / win）
+PLATFORM = "mac" if config.is_mac() else "win"
+# 前端教程里要展示的配置目录（按平台给出习惯写法）
+CONFIG_DIR_TEXT = ("~/Library/Application Support/ExifCraft" if PLATFORM == "mac"
+                   else "%LOCALAPPDATA%\\ExifCraft")
 TOKEN = secrets.token_urlsafe(24)
 LAST_RENAME: dict = {"undo": []}
 
 mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("text/css", ".css")
 mimetypes.add_type("image/svg+xml", ".svg")
+
+
+def reveal(target: str) -> None:
+    """在系统的文件管理器里定位这个路径（Windows 资源管理器 / macOS 访达）。"""
+    if config.is_mac():
+        # -R 是「在访达里显示并选中」，对文件对文件夹都成立
+        subprocess.Popen(["open", "-R", target])  # noqa: S603,S607
+        return
+    if os.path.isfile(target):
+        subprocess.Popen(["explorer", "/select,", target])  # noqa: S603,S607
+    else:
+        os.startfile(target)  # noqa: S606
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -220,10 +237,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/reveal":
                 p = data.get("path") or ""
                 if p and os.path.exists(p):
-                    if os.path.isfile(p):
-                        subprocess.Popen(["explorer", "/select,", os.path.normpath(p)])
-                    else:
-                        os.startfile(os.path.normpath(p))  # noqa: S606
+                    reveal(os.path.normpath(p))
                     return self._json({"ok": True})
                 return self._err("路径不存在")
 
@@ -250,7 +264,9 @@ class Handler(BaseHTTPRequestHandler):
             html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
         except OSError:
             return self._err("index.html 缺失", 500)
-        html = html.replace("__PM_TOKEN__", TOKEN)
+        html = (html.replace("__PM_TOKEN__", TOKEN)
+                    .replace("__PM_PLATFORM__", PLATFORM)
+                    .replace("__PM_CONFIG_DIR__", CONFIG_DIR_TEXT))
         self._send(200, html.encode("utf-8"), "text/html; charset=utf-8")
 
     def _static(self, rel: str):

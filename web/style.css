@@ -58,7 +58,7 @@ html {
   --md-shape-full: 9999px;
 
   /* type scale · 桌面 compact 密度变体 */
-  --font: system-ui, "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  --font: system-ui, -apple-system, "SF Pro Text", "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
   --md-typescale-label-xl: 500 14px/20px var(--font);
   --md-typescale-label-l: 500 13px/18px var(--font);
   --md-typescale-label-s: 500 11px/16px var(--font);

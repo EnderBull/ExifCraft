@@ -1,4 +1,4 @@
-"""ExifCraft 启动入口。"""
+"""ExifCraft 启动入口（Windows / macOS）。"""
 from __future__ import annotations
 
 import os
@@ -12,17 +12,33 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from core import config  # noqa: E402
 from core.server import Server  # noqa: E402
 
+IS_MAC = sys.platform == "darwin"
+
 
 def _fatal(msg: str) -> None:
+    """启动失败时用系统对话框报错（Windows 用 MessageBox，macOS 用 osascript）。"""
     try:
-        import ctypes
-        ctypes.windll.user32.MessageBoxW(None, msg, "ExifCraft 启动失败", 0x10)
+        if IS_MAC:
+            import subprocess
+            text = msg.replace("\\", "\\\\").replace('"', '\\"')
+            subprocess.run(
+                ["osascript", "-e",
+                 f'display dialog "{text}" with title "ExifCraft 启动失败" buttons {{"好"}} default button 1 with icon stop'],
+                check=False,
+            )
+        else:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(None, msg, "ExifCraft 启动失败", 0x10)
     except Exception:
         print(msg)
 
 
 class WindowApi:
-    """暴露给前端的最小窗口控制接口（无边框窗口自绘标题栏用）。"""
+    """暴露给前端的最小窗口控制接口（Windows 无边框窗口自绘标题栏用）。
+
+    macOS 版一律使用系统原生标题栏，红黄绿交通灯由系统绘制，
+    因此这里的位置/尺寸接口只用于前端查询，不会影响窗口行为。
+    """
 
     def __init__(self):
         self._maxed = False
@@ -43,6 +59,13 @@ class WindowApi:
         w = self._win()
         if not w:
             return False
+        if IS_MAC:
+            # macOS 是「缩放（zoom）」，由系统交通灯负责；这里只做全屏切换的兜底
+            try:
+                w.toggle_fullscreen()
+                return not self._maxed
+            except Exception:
+                return False
         if self._maxed:
             w.restore()
             self._maxed = False
@@ -59,17 +82,23 @@ class WindowApi:
         return True
 
     def pick_file(self) -> str:
-        """弹出系统文件对话框选一个文件（用于指定 exiftool.exe）。取消返回空串。"""
+        """弹出系统文件对话框选一个文件（用于指定 ExifTool）。取消返回空串。
+
+        macOS 上的 ExifTool 是没有扩展名的可执行文件，因此不设文件类型过滤。
+        """
         w = self._win()
         if not w:
             return ""
         try:
             import webview
-            res = w.create_file_dialog(
-                webview.OPEN_DIALOG,
-                allow_multiple=False,
-                file_types=("可执行文件 (*.exe)", "所有文件 (*.*)"),
-            )
+            if IS_MAC:
+                res = w.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=False)
+            else:
+                res = w.create_file_dialog(
+                    webview.OPEN_DIALOG,
+                    allow_multiple=False,
+                    file_types=("可执行文件 (*.exe)", "所有文件 (*.*)"),
+                )
         except Exception:
             return ""
         if not res:
@@ -101,6 +130,24 @@ class WindowApi:
         w = self._win()
         if not w or self._maxed:
             return False
+        if IS_MAC:
+            try:
+                import AppKit
+                native = w.native
+                screen = native.screen().frame()
+                # 前端传的是「左上角为原点」的坐标；Cocoa 用左下角原点
+                fx = screen.origin.x + int(x)
+                fy = screen.origin.y + screen.size.height - int(y) - int(height)
+                rect = AppKit.NSMakeRect(fx, fy, int(width), int(height))
+                native.setFrame_display_(rect, True)
+                return True
+            except Exception:
+                try:
+                    w.move(int(x), int(y))
+                    w.resize(int(width), int(height))
+                    return True
+                except Exception:
+                    return False
         try:
             import ctypes
             hwnd = w.native.Handle.ToInt32()
@@ -122,12 +169,25 @@ class WindowApi:
                 return False
 
 
+def _mac_window_size() -> tuple[int, int]:
+    """macOS：按屏幕可用区域给一个合适的初始尺寸，避免小屏笔记本上窗口超出屏幕。"""
+    try:
+        import AppKit
+        f = AppKit.NSScreen.mainScreen().visibleFrame()
+        sw, sh = int(f.size.width), int(f.size.height)
+        return max(1040, min(1460, sw - 80)), max(640, min(920, sh - 80))
+    except Exception:
+        return 1460, 920
+
+
 def run(browser_only: bool = False, port: int = 0) -> None:
     srv = Server(port=port)
     srv.start()
     url = srv.url
 
-    use_native_frame = bool(config.load().get("native_frame")) or "--framed" in sys.argv
+    # macOS 固定用系统原生标题栏（交通灯 + 系统拖拽/缩放），不给无边框选项
+    use_native_frame = IS_MAC or bool(config.load().get("native_frame")) or "--framed" in sys.argv
+    win_w, win_h = _mac_window_size() if IS_MAC else (1460, 920)
 
     if not browser_only:
         try:
@@ -136,8 +196,8 @@ def run(browser_only: bool = False, port: int = 0) -> None:
             webview.create_window(
                 "ExifCraft · 照片元数据工具",
                 target,
-                width=1460,
-                height=920,
+                width=win_w,
+                height=win_h,
                 min_size=(1040, 640),
                 background_color="#0b0c0f",
                 frameless=not use_native_frame,
@@ -151,10 +211,14 @@ def run(browser_only: bool = False, port: int = 0) -> None:
         except Exception:
             log = config.appdata_dir() / "startup-error.log"
             log.write_text(traceback.format_exc(), encoding="utf-8")
+            if IS_MAC:
+                hint = "无法启动应用窗口。macOS 自带 WKWebView，通常不会缺运行时；请查看下面的错误详情。"
+            else:
+                hint = "无法启动应用窗口（通常是缺少 WebView2 运行时）。"
             _fatal(
-                "无法启动应用窗口（通常是缺少 WebView2 运行时）。\n\n"
-                "已改为在浏览器中打开，如浏览器没有自动打开，请手动访问：\n"
-                f"{url}\n\n错误详情见：{log}"
+                hint
+                + "\n\n已改为在浏览器中打开，如浏览器没有自动打开，请手动访问：\n"
+                + f"{url}\n\n错误详情见：{log}"
             )
 
     print(f"ExifCraft 已启动：{url}")

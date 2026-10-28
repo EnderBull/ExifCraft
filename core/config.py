@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 from pathlib import Path
 
@@ -11,17 +12,42 @@ APP_NAME = "ExifCraft"
 _LOCK = threading.Lock()
 
 
+def is_mac() -> bool:
+    return sys.platform == "darwin"
+
+
+def is_win() -> bool:
+    return os.name == "nt"
+
+
 def appdata_dir() -> Path:
-    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    p = Path(base) / APP_NAME
+    """配置与备份目录。Windows 用 %LOCALAPPDATA%，macOS 用 ~/Library/Application Support。"""
+    if is_mac():
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+    p = base / APP_NAME
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 
 def cache_dir() -> Path:
-    p = appdata_dir() / "cache"
+    """缩略图缓存。macOS 按惯例放 ~/Library/Caches，可被系统自动清理。"""
+    p = (Path.home() / "Library" / "Caches" / APP_NAME) if is_mac() else (appdata_dir() / "cache")
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def norm_key(path: str) -> str:
+    """路径比较键。Windows 与 macOS 默认卷都不区分大小写，Linux 区分。
+
+    os.path.normcase 在 POSIX 上是空操作，直接用会让 macOS 上
+    IMG_1.JPG / img_1.jpg 被当成两个不同文件（可能互相覆盖）。
+    """
+    p = os.path.abspath(path)
+    if is_win():
+        return os.path.normcase(p)
+    return p.lower() if is_mac() else p
 
 
 def backup_dir() -> Path:

@@ -24,12 +24,19 @@ _cache: dict = {"path": None, "ver": None, "checked": False}
 
 
 def _roots() -> list[str]:
-    """程序可能安放 exiftool.exe 的目录（打包后就是 exe 所在目录）。"""
+    """程序可能安放 exiftool 的目录（打包后就是程序自身所在的几个位置）。"""
     here = os.path.dirname(os.path.abspath(
         sys.executable if getattr(sys, "frozen", False) else __file__))
     roots = [here, os.path.dirname(here)]
     if getattr(sys, "frozen", False):
-        roots.insert(0, os.path.dirname(os.path.abspath(sys.executable)))
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        roots.insert(0, exe_dir)
+        if config.is_mac():
+            # .app 内部：Contents/MacOS（可执行文件）→ Contents → Contents/Resources
+            contents = os.path.dirname(exe_dir)
+            roots.append(os.path.join(contents, "Resources"))
+            # 以及 .app 外面那层，方便用户把 exiftool 放在 ExifCraft.app 旁边
+            roots.append(os.path.dirname(contents))
     return roots
 
 
@@ -65,10 +72,10 @@ def source_of(path: str | None) -> str:
     if not path:
         return ""
     cfg = (config.load().get("exiftool_path") or "").strip()
-    if cfg and os.path.normcase(os.path.abspath(cfg)) == os.path.normcase(os.path.abspath(path)):
+    if cfg and config.norm_key(cfg) == config.norm_key(path):
         return "设置中指定的路径"
     for root in _roots():
-        if os.path.normcase(os.path.abspath(path)).startswith(os.path.normcase(os.path.abspath(root)) + os.sep):
+        if config.norm_key(path).startswith(config.norm_key(root) + os.sep):
             return "程序目录"
     return "自动查找"
 

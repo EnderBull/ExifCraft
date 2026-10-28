@@ -1,0 +1,94 @@
+name: build-macos
+
+# 只出产物，不发布。
+# 注意：workflow_dispatch 要求工作流文件已存在于默认分支，而本项目要求
+# 主分支在最终发布前保持不动，所以这里用「推送到 mac-ci 分支」来触发。
+on:
+  push:
+    branches:
+      - mac-ci
+    paths:
+      - "**"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本号（只用于 dmg / zip 文件名）"
+        required: false
+        default: "2.2.0"
+
+env:
+  # 版本号不经 shell 直接引用，避免注入
+  APP_VERSION: ${{ github.event.inputs.version || '2.2.0' }}
+
+jobs:
+  macos-arm64:
+    # macos-14 的 runner 是 Apple Silicon（M1），出原生 arm64 产物
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 确认 runner 架构
+        run: uname -m && sw_vers
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: arm64
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip list
+
+      - name: 自检（导入 app / 渲染 index）
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, ".")
+          import app
+          from core import server, config
+          assert app.IS_MAC, "IS_MAC 应为 True"
+          assert server.PLATFORM == "mac", server.PLATFORM
+          html = (server.WEB_DIR / "index.html").read_text(encoding="utf-8")
+          assert "__PM_TOKEN__" in html and "__PM_PLATFORM__" in html
+          print("config dir:", config.appdata_dir())
+          print("cache dir:", config.cache_dir())
+          print("ok")
+          PY
+
+      - name: PyInstaller 打包（.app）
+        run: |
+          python -m PyInstaller --noconfirm --clean ExifCraft.spec
+          ls -la dist
+          test -d dist/ExifCraft.app
+          du -sh dist/ExifCraft.app
+          file dist/ExifCraft.app/Contents/MacOS/ExifCraft
+
+      - name: 清理隔离属性 + 生成 dmg / zip
+        run: |
+          APP="dist/ExifCraft.app"
+          /usr/bin/codesign --force --deep -s - "$APP" || true
+          /usr/bin/codesign -dv --verbose=2 "$APP" || true
+          xattr -cr "$APP" || true
+
+          rm -rf dmgroot && mkdir -p dmgroot
+          cp -R "$APP" dmgroot/
+          ln -s /Applications dmgroot/Applications
+          hdiutil create -volname "ExifCraft" -srcfolder dmgroot -ov -format UDZO \
+            "ExifCraft-${APP_VERSION}-macOS-arm64.dmg"
+
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP" \
+            "ExifCraft-${APP_VERSION}-macOS-arm64.zip"
+
+          ls -la *.dmg *.zip
+          shasum -a 256 *.dmg *.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ExifCraft-macOS-arm64
+          path: |
+            ExifCraft-*-macOS-arm64.dmg
+            ExifCraft-*-macOS-arm64.zip
+          retention-days: 14

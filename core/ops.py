@@ -13,7 +13,7 @@ import exifread
 import piexif
 from PIL import Image, ImageOps
 
-from . import exifio, media
+from . import config, exifio, media
 
 # ---------------------------------------------------------------- 任务系统
 
@@ -175,16 +175,16 @@ def rename_preview(paths: list[str], template: str, start: int = 1) -> list[dict
     # 冲突检测
     seen: dict[str, int] = {}
     for item in out:
-        key = os.path.normcase(os.path.join(item["dir"], item["newName"]))
+        key = config.norm_key(os.path.join(item["dir"], item["newName"]))
         seen[key] = seen.get(key, 0) + 1
 
     for item in out:
         target = os.path.join(item["dir"], item["newName"])
-        key = os.path.normcase(target)
+        key = config.norm_key(target)
         conflict = ""
         if seen[key] > 1:
             conflict = "重名"
-        elif os.path.exists(target) and os.path.normcase(target) != os.path.normcase(item["src"]):
+        elif os.path.exists(target) and config.norm_key(target) != config.norm_key(item["src"]):
             conflict = "已存在"
         item["conflict"] = conflict
     return out
@@ -200,7 +200,7 @@ def rename_apply(items: list[dict]) -> dict:
     for it in items:
         src = it["src"]
         dst = os.path.join(it["dir"], it["newName"])
-        if os.path.normcase(src) == os.path.normcase(dst):
+        if config.norm_key(src) == config.norm_key(dst):
             job["done"] += 1
             continue
         stage.append((src, dst))

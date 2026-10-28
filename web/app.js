@@ -11,10 +11,31 @@ const PARAMS = new URLSearchParams(location.search);
 const FRAMED = PARAMS.has('framed');
 const CHROME = !FRAMED && PARAMS.has('chrome');
 
+/* 平台差异：服务端渲染 index.html 时把 __PM_PLATFORM__ 换成 mac / win */
+const PLATFORM = (document.querySelector('meta[name="pm-platform"]') || {}).content || 'win';
+const IS_MAC = PLATFORM === 'mac';
+const SEP = IS_MAC ? '/' : '\\';
+const MOD = IS_MAC ? 'Cmd' : 'Ctrl';
+const CONFIG_DIR_LABEL = IS_MAC
+  ? '~/Library/Application Support/ExifCraft'
+  : '%LOCALAPPDATA%\\ExifCraft';
+
 /* ------------------------------------------------------------ utils */
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+/* 取父目录。macOS 的 "/" 与 Windows 的 "D:\\" 都在这里收敛，避免上层自己拼分隔符。 */
+function parentPath(p) {
+  if (!p) return '';
+  const s = String(p).replace(/[\\/]+$/, '');
+  if (/^[A-Za-z]:$/.test(s)) return '';              // Windows 盘符根 / POSIX 根，没有更上层
+  const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+  if (i < 0) return '';
+  if (i === 0) return s[0];                          // POSIX 根目录
+  const up = s.slice(0, i);
+  return /^[A-Za-z]:$/.test(up) ? up + SEP : up;
+}
+
 const fmtSize = (n) => {
   if (!n) return '0 B';
   const u = ['B', 'KB', 'MB', 'GB'];
@@ -109,6 +130,8 @@ function setMaxState(maxed) {
 }
 
 function applyChrome() {
+  // macOS 一律使用系统原生标题栏（交通灯由系统绘制），不启用自绘窗口控件
+  if (IS_MAC) return;
   if (document.body.classList.contains('frameless')) return;
   document.body.classList.add('frameless');
   const c = $('#winctl');
@@ -120,6 +143,8 @@ let chromeWired = false;
 /* 注意：window.pywebview.api 在桥接就绪前是空对象 {}，
    必须等方法真的挂上之后再置位 chromeWired，否则永远接不上。 */
 function wireWindowApi() {
+  // macOS 用系统原生标题栏：最小化/最大化/关闭/八向缩放全交给系统，前端一律不接管
+  if (IS_MAC) return;
   const api = wapi();
   if (!api) return;
   const has = (n) => typeof api[n] === 'function';
@@ -474,14 +499,15 @@ function renderCrumbs(d) {
   const box = $('#crumbs');
   box.innerHTML = '';
   const parts = d.path.split(/[\\/]+/).filter(Boolean);
-  let acc = '';
+  let acc = IS_MAC ? '/' : '';
   const nodes = [];
   if (/^[A-Za-z]:$/.test(parts[0])) {
-    acc = parts[0] + '\\';
+    acc = parts[0] + SEP;
     nodes.push({ name: parts[0], path: acc });
   }
-  for (let i = 1; i < parts.length; i++) {
-    acc = acc.endsWith('\\') ? acc + parts[i] : acc + '\\' + parts[i];
+  for (let i = 0; i < parts.length; i++) {
+    if (/^[A-Za-z]:$/.test(parts[i])) continue;      // 盘符已单独入栈
+    acc = acc.endsWith(SEP) ? acc + parts[i] : acc + SEP + parts[i];
     nodes.push({ name: parts[i], path: acc });
   }
   if (!nodes.length) { box.textContent = d.path; return; }
@@ -502,7 +528,7 @@ function renderCrumbs(d) {
 function updateNav() {
   $('#btnBack').disabled = S.hIdx <= 0;
   $('#btnFwd').disabled = S.hIdx >= S.history.length - 1;
-  $('#btnUp').disabled = !S.path || S.path.length <= 3;
+  $('#btnUp').disabled = !S.path || !parentPath(S.path);
 }
 
 /* ============================================================ grid */
@@ -780,7 +806,7 @@ function bindGrid() {
   }, { passive: true });
 
   scroll.addEventListener('wheel', (e) => {
-    if (!e.ctrlKey) return;
+    if (!e.ctrlKey && !e.metaKey) return;
     e.preventDefault();
     setThumb(S.thumb + (e.deltaY > 0 ? -16 : 16));
   }, { passive: false });
@@ -878,7 +904,7 @@ function renderInfo() {
   const n = S.sel.size;
 
   if (!n) {
-    box.innerHTML = `<div class="multi-note">未选择照片。<br>在左侧选择文件夹，点击缩略图查看详情；按住 Ctrl / Shift 可多选。</div>`;
+    box.innerHTML = `<div class="multi-note">未选择照片。<br>在左侧选择文件夹，点击缩略图查看详情；按住 ${MOD} / Shift 可多选。</div>`;
     return;
   }
   if (n > 1) {
@@ -1165,9 +1191,8 @@ function bindToolbar() {
   $('#btnFwd').onclick = () => { if (S.hIdx < S.history.length - 1) { S.hIdx++; navigate(S.history[S.hIdx], false); } };
   $('#btnUp').onclick = () => {
     if (!S.path) return;
-    const p = S.path.replace(/[\\/]+$/, '');
-    const parent = p.replace(/[\\/][^\\/]+$/, '');
-    navigate(parent && parent !== p ? parent : p + '\\');
+    const parent = parentPath(S.path);
+    navigate(parent || S.path);
   };
 
   $('#search').addEventListener('input', debounce((e) => {
@@ -1682,8 +1707,7 @@ function openDirPicker(startPath, cb) {
 
   $('#dpUp').onclick = () => {
     if (!cur) return;
-    const p = cur.replace(/[\\/]+$/, '').replace(/[\\/][^\\/]+$/, '');
-    go(p && p !== cur ? p : '');
+    go(parentPath(cur));
   };
   $('#dpHome').onclick = () => go('');
   $('#dpOk').onclick = () => { if (cur) { closeModal(); cb(cur); } };
@@ -1713,14 +1737,14 @@ function openSettings() {
             <button data-theme="light" class="${document.documentElement.dataset.theme === 'light' ? 'active' : ''}">浅色</button>
           </div>
         </div>
-        <div class="group-title">窗口</div>
+        ${IS_MAC ? '' : `<div class="group-title">窗口</div>
         <div class="form-row">
           <label class="check-row">
             <input type="checkbox" id="stNativeFrame" ${s.native_frame ? 'checked' : ''}>
             使用 Windows 系统标题栏
           </label>
           <div class="hint">默认使用自绘标题栏（无边框窗口）。如果窗口显示异常、无法拖动或缩放，勾选此项并重启程序即可恢复系统标题栏。</div>
-        </div>
+        </div>`}
         <div class="group-title">缩略图缓存</div>
         <div class="form-row">
           <div class="hint">缩略图会缓存在本机，加快二次打开速度。删除后首次浏览会重新生成。</div>
@@ -1777,16 +1801,16 @@ function openSettings() {
       </div>
       <div id="stAbout" hidden>
         <div class="group-title">ExifCraft</div>
-        <div class="kv"><span class="k">版本</span><span class="v">2.1.0</span></div>
+        <div class="kv"><span class="k">版本</span><span class="v">2.2.0</span></div>
         <div class="kv"><span class="k">支持</span><span class="v">JPG 读写 EXIF · RAW（含 CR3）只读</span></div>
         <div class="kv"><span class="k">ExifTool</span><span class="v small">${S.etAvailable ? '已调用 v' + esc(S.et.version || '') + '（仅用于读取 CR3）' : '未调用（可选）'}</span></div>
-        <div class="kv"><span class="k">配置</span><span class="v small">%LOCALAPPDATA%\\ExifCraft</span></div>
+        <div class="kv"><span class="k">配置</span><span class="v small">${esc(CONFIG_DIR_LABEL)}</span></div>
         <div class="group-title">快捷键</div>
         <div class="kv"><span class="k">方向键</span><span class="v">移动选择</span></div>
         <div class="kv"><span class="k">Shift + 方向键</span><span class="v">扩展选择</span></div>
         <div class="kv"><span class="k">Enter</span><span class="v">大图查看</span></div>
         <div class="kv"><span class="k">Space</span><span class="v">切换选中</span></div>
-        <div class="kv"><span class="k">Ctrl + A</span><span class="v">全选</span></div>
+        <div class="kv"><span class="k">${MOD} + A</span><span class="v">全选</span></div>
         <div class="kv"><span class="k">/</span><span class="v">搜索文件名</span></div>
         <div class="kv"><span class="k">Esc</span><span class="v">取消选择 / 关闭</span></div>
         <div class="kv"><span class="k">Alt + ← → ↑</span><span class="v">后退 / 前进 / 上一级</span></div>
@@ -1900,7 +1924,7 @@ function openSettings() {
         amap_key: $('#stKey').value.trim(),
         amap_secret: $('#stSecret').value.trim(),
         theme: document.documentElement.dataset.theme,
-        native_frame: $('#stNativeFrame').checked,
+        native_frame: !!($('#stNativeFrame') && $('#stNativeFrame').checked),
         exiftool_path: $('#stEtPath').value.trim(),
       }),
     });

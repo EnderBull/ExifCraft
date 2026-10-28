@@ -193,7 +193,7 @@ def clear_cache() -> tuple[int, int]:
 
 # ---------------------------------------------------------------- 目录扫描
 
-def _drive_roots() -> list[dict]:
+def _win_roots() -> list[dict]:
     roots = []
     try:
         for d in os.listdrives():  # Python 3.12+
@@ -208,7 +208,38 @@ def _drive_roots() -> list[dict]:
             d = f"{letter}:\\"
             if os.path.exists(d):
                 roots.append({"name": f"{letter}:", "path": d, "kind": "drive"})
+    return roots
 
+
+def _mac_roots() -> list[dict]:
+    """macOS 没有盘符：根目录 /、挂载卷 /Volumes/*、照片图库、常用文件夹。"""
+    roots = [{"name": "启动磁盘", "path": "/", "kind": "drive"}]
+    try:
+        for name in sorted(os.listdir("/Volumes")):
+            if name.startswith("."):
+                continue
+            p = os.path.join("/Volumes", name)
+            if os.path.ismount(p) or os.path.isdir(p):
+                roots.append({"name": name, "path": p, "kind": "drive"})
+    except OSError:
+        pass
+    home = Path.home()
+    pics = home / "Pictures"
+    if pics.is_dir():
+        roots.append({"name": "照片图库", "path": str(pics), "kind": "quick"})
+    for name, sub in (("桌面", "Desktop"), ("下载", "Downloads"), ("文档", "Documents"),
+                      ("影片", "Movies"), ("音乐", "Music"), ("个人", "Public")):
+        p = home / sub
+        if p.is_dir():
+            roots.append({"name": name, "path": str(p), "kind": "quick"})
+    return roots
+
+
+def _drive_roots() -> list[dict]:
+    if config.is_mac():
+        return _mac_roots()
+
+    roots = _win_roots()
     home = Path.home()
     for name, sub in (("图片", "Pictures"), ("桌面", "Desktop"), ("下载", "Downloads"), ("文档", "Documents")):
         p = home / sub
@@ -251,7 +282,7 @@ SKIP_DIRS = {"$RECYCLE.BIN", "System Volume Information", "node_modules", ".git"
 def _walk_photos(root: str, max_files: int = 20000, max_depth: int = 8) -> list[dict]:
     """递归收集照片，返回带相对路径的记录。"""
     out: list[dict] = []
-    base_len = len(root.rstrip("\\/")) + 1
+    base_len = len(root.rstrip("\\/")) + 1  # 分隔符只在根末尾丢一个
     stack = [(root, 0)]
     truncated = False
     while stack:
@@ -346,7 +377,7 @@ def list_dir(path: str, sort: str = "name", want_counts: bool = True, recursive:
         files.sort(key=lambda x: x["name"].lower())
 
     parent = os.path.dirname(path)
-    if os.path.normcase(parent) == os.path.normcase(path):
+    if config.norm_key(parent) == config.norm_key(path):
         parent = ""
 
     return {

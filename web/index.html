@@ -1,9 +1,10 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN" data-theme="dark" data-platform="__PM_PLATFORM__">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="pm-token" content="__PM_TOKEN__">
+<meta name="pm-platform" content="__PM_PLATFORM__">
 <title>ExifCraft</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -222,7 +223,7 @@
   <h3>关于配额与安全</h3>
   <ul>
     <li>个人开发者有免费日配额（具体数值以高德控制台为准）。本工具只在打开地图选点窗口时加载一次地图，正常使用远低于上限。</li>
-    <li>Key 只保存在本机 <code>%LOCALAPPDATA%\ExifCraft\config.json</code>，不会上传到任何服务器。</li>
+    <li>Key 只保存在本机 <code>__PM_CONFIG_DIR__\config.json</code>，不会上传到任何服务器。</li>
     <li>如果怀疑 Key 泄露，可在高德控制台删除该 Key 并重新创建。</li>
     <li>不填 Key 也能正常使用全部 EXIF 功能，只是无法使用地图选点，可手动输入经纬度。</li>
   </ul>
@@ -241,9 +242,9 @@
   <h3>第二步 · 下载</h3>
   <ol>
     <li>打开 <a href="https://exiftool.org/" data-external>exiftool.org</a>，页面顶部就是最新版下载链接。</li>
-    <li>Windows 用户下载 <b>「Windows Executable」</b>（文件名形如 <code>exiftool-13.59_64.zip</code>）。<b>不要</b>下 Perl 源码包，那个还需要另装 Perl。</li>
-    <li>把 zip 解压，得到一个形如 <code>exiftool-13.59_64</code> 的文件夹，里面有 <code>exiftool.exe</code> 和 <code>exiftool_files</code> 文件夹。</li>
-    <li><b>整个文件夹要一起留着</b>：<code>exiftool.exe</code> 离开 <code>exiftool_files</code> 就跑不起来。</li>
+    <li>Windows 用户下载 <b>「Windows Executable」</b>（文件名形如 <code>exiftool-13.59_64.zip</code>）；macOS 用户下载 <b>「MacOS Package」</b>（<code>.pkg</code>，装完在 <code>/usr/local/bin/exiftool</code>）。两种都<b>不要</b>下 Perl 源码包，那个还需要另装 Perl。</li>
+    <li>Windows：把 zip 解压，得到一个形如 <code>exiftool-13.59_64</code> 的文件夹，里面有 <code>exiftool.exe</code> 和 <code>exiftool_files</code> 文件夹。macOS：装完 <code>.pkg</code> 后 <code>/usr/local/bin/exiftool</code> 是指向 <code>exiftool_files</code> 的符号链接，直接用即可，到第四步把路径指过去即可。</li>
+    <li><b>Windows 上整个文件夹要一起留着</b>：<code>exiftool.exe</code> 离开 <code>exiftool_files</code> 就跑不起来。</li>
   </ol>
 
   <h3>第三步 · 放到程序目录（推荐）</h3>
@@ -257,13 +258,14 @@
    └─ exiftool_files\</pre>
     </li>
     <li>或者把 <code>exiftool.exe</code> 连同 <code>exiftool_files</code> 一起直接摊平放进程序目录，同样能被找到。</li>
+    <li>macOS 上则是把 <code>exiftool</code>（或装好的 <code>/usr/local/bin/exiftool</code>）放到 <code>ExifCraft.app</code> 所在的文件夹里。</li>
     <li>回到本页点「检测」，状态变成「已调用」就配置好了，来源会显示「程序目录」。</li>
   </ol>
 
   <h3>第四步 · 或者手动指定路径</h3>
   <ol>
-    <li>不想把文件放进程序目录的，可以放在任意位置（比如 <code>D:\Tools\exiftool\exiftool.exe</code>）。</li>
-    <li>点输入框右边的「选择…」，指到 <code>exiftool.exe</code> 上。</li>
+    <li>不想把文件放进程序目录的，可以放在任意位置（Windows 如 <code>D:\Tools\exiftool\exiftool.exe</code>，macOS 如 <code>/usr/local/bin/exiftool</code>）。</li>
+    <li>点输入框右边的「选择…」，指到 <code>exiftool.exe</code>（macOS 上是 <code>exiftool</code>）上。</li>
     <li>点「检测」确认，再点设置窗口右下角的「保存」。</li>
     <li>指定路径的优先级最高，会盖过程序目录里的同名文件。</li>
   </ol>
@@ -278,9 +280,9 @@
 
   <h3>常见问题</h3>
   <table class="err-table">
-    <tr><td>检测不到，但 exe 明明在</td><td>大概率只拷了 <code>exiftool.exe</code>、没拷 <code>exiftool_files</code>。这个文件夹里是 Perl 运行时和模块，缺了会直接报错退出。</td></tr>
+    <tr><td>检测不到，但文件明明在</td><td>Windows：大概率只拷了 <code>exiftool.exe</code>、没拷 <code>exiftool_files</code>，这个文件夹里是 Perl 运行时和模块。macOS：确认 <code>.pkg</code> 已安装，或手动指到 <code>/usr/local/bin/exiftool</code>。</td></tr>
     <tr><td>提示「没有找到 ExifTool」</td><td>CR3 依然能看到常用的拍摄参数、镜头、作者、GPS，用的是程序内置的解析器。只是细节标签会少一些，不影响任何其他功能。</td></tr>
-    <tr><td>版本一栏是「未知」</td><td><code>exiftool.exe -ver</code> 没能跑通，通常是杀软拦截了子进程，或文件被占用。把它加入信任列表再试。</td></tr>
+    <tr><td>版本一栏是「未知」</td><td><code>exiftool -ver</code> 没能跑通：Windows 上通常是杀软拦截子进程，把它加入信任列表；macOS 上通常是首次运行被 Gatekeeper 拦住，到「系统设置 → 隐私与安全性」里允许一次即可。</td></tr>
     <tr><td>换了位置要重新设吗</td><td>放在程序目录里的不需要；手动指定过绝对路径的，移动文件后要重新选一次。</td></tr>
     <tr><td>会不会拖慢启动</td><td>不会。程序只在首次需要读 CR3 时调用一次 ExifTool 探测版本，结果会缓存。</td></tr>
   </table>
