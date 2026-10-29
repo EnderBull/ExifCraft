@@ -1,14 +1,9 @@
 name: build-macos
 
-# 只出产物，不发布。
-# 注意：workflow_dispatch 要求工作流文件已存在于默认分支，而本项目要求
-# 主分支在最终发布前保持不动，所以这里用「推送到 mac-ci 分支」来触发。
+# 只出产物，不自动发布。手动触发：Actions → build-macos → Run workflow。
+# macOS 产物只能在 macOS 上打（PyInstaller 不支持交叉编译，pyobjc 也没有 Windows 轮子），
+# 所以在 Windows 上开发时靠这个工作流出包。
 on:
-  push:
-    branches:
-      - mac-ci
-    paths:
-      - "**"
   workflow_dispatch:
     inputs:
       version:

@@ -9,7 +9,7 @@
 不联网、不上传，所有操作都在本机完成
 
 [![Release](https://img.shields.io/github/v/release/EnderBull/ExifCraft?color=4d7cfe&label=release)](../../releases/latest)
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-4d7cfe)](../../releases/latest)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-4d7cfe)](../../releases/latest)
 [![License](https://img.shields.io/github/license/EnderBull/ExifCraft?color=4d7cfe)](LICENSE)
 [![Size](https://img.shields.io/badge/portable-18.1%20MB-4d7cfe)](../../releases/latest)
 
@@ -22,6 +22,7 @@
 ## 为什么是它
 
 - **小** — 绿色版 18.1 MB，解压即用，不写注册表；冷启动 1.5–3 秒
+- **双平台** — Windows 10/11 x64 与 macOS 11+（Apple Silicon）同一套代码；界面按平台自动切换（macOS 用系统原生标题栏，快捷键改用 Cmd）
 - **无损** — 写 EXIF 只替换 APP1 段，不重新压缩图像数据，画质零损失
 - **干净** — 界面用原生 HTML/CSS/JS，无框架无构建；后端只用 Python 标准库 + Pillow + piexif + exifread；全程不联网
 - **够快** — 虚拟滚动网格，上万张照片也不卡；缩略图按当前视口优先级加载，滚到哪先加载哪
@@ -29,9 +30,15 @@
 
 ## 下载
 
-到 [Releases](../../releases/latest) 页面下载 **ExifCraft-v2.1.0-win64-portable.zip**（绿色版，解压即用，无需安装）。
+到 [Releases](../../releases/latest) 页面下载：
 
-解压后双击 `ExifCraft.exe`。首次启动会自动创建配置目录 `%LOCALAPPDATA%\ExifCraft`：
+| 平台 | 文件 | 说明 |
+|---|---|---|
+| Windows 10/11 x64 | `ExifCraft-v2.2.1-win64-portable.zip`（18.1 MB） | 绿色版，解压即用，无需安装 |
+| macOS 11+ · Apple Silicon | `ExifCraft-2.2.1-macOS-arm64.dmg`（17.3 MB） | 拖进「应用程序」即可；**未签名，首次打开见下** |
+| macOS 备用 | `ExifCraft-2.2.1-macOS-arm64.zip`（16.2 MB） | 解压得到 `ExifCraft.app`，与 dmg 内容相同 |
+
+**Windows**：解压后双击 `ExifCraft.exe`。首次启动会自动创建配置目录 `%LOCALAPPDATA%\ExifCraft`：
 
 ```
 config.json     设置（含高德 Key）
@@ -39,7 +46,37 @@ cache/          缩略图缓存，可随时删除
 backups/        每次写入前的 EXIF 备份
 ```
 
-> **系统要求**：Windows 10/11 x64，需要 [WebView2 运行时](https://developer.microsoft.com/microsoft-edge/webview2/)（Win11 与较新的 Win10 已内置）。
+> **Windows 要求**：Windows 10/11 x64，需要 [WebView2 运行时](https://developer.microsoft.com/microsoft-edge/webview2/)（Win11 与较新的 Win10 已内置）。
+
+**macOS**：打开 dmg，把 `ExifCraft.app` 拖到「应用程序」。配置目录是 `~/Library/Application Support/ExifCraft`，缓存是 `~/Library/Caches/ExifCraft`。
+
+> **macOS 要求**：macOS 11 Big Sur 或更高，**仅 Apple Silicon（M 系列）**；Intel Mac 请用源码方式运行。
+
+### macOS 首次打开（未签名）
+
+这一版**没有做代码签名和公证**（需要 Apple 开发者账号，$99/年）。从网上下载的 app 会被 Gatekeeper 拦住，提示「ExifCraft 已损坏，无法打开」或「无法验证开发者」——**不是文件坏了**，是浏览器给下载的文件打上了隔离属性。两种解法任选其一：
+
+**方法一（最简单）**：Finder 里**右键**点 `ExifCraft.app` → 选「打开」→ 弹窗里再点一次「打开」。只需做一次，之后双击就正常。
+
+**方法二（命令行，最彻底）**：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/ExifCraft.app
+```
+
+提示 `Operation not permitted` 就在前面加 `sudo`。执行完双击即可打开。
+
+> macOS 15 之后「系统设置 → 隐私与安全性」页面底部也会出现「仍要打开」按钮，点它等价于方法一。
+
+### macOS 权限（TCC）
+
+浏览照片目录时，macOS 会弹窗询问「桌面」「文稿」「下载」「可移除宗卷」「网络宗卷」的访问权限——这是系统正常的隐私保护，点**允许**即可。
+
+**误点了「不允许」会怎样**：对应文件夹显示为空列表，不报错，只是看不到文件。修复办法：
+
+1. 系统设置 → 隐私与安全性 → 文件与文件夹 → 找到 ExifCraft → 勾上需要的项
+2. 或者直接给它「完全磁盘访问权限」（一劳永逸，代价是权限更大）
+3. **改完权限必须退出并重新打开 ExifCraft** 才生效
 
 ## 能做什么
 
@@ -76,29 +113,50 @@ backups/        每次写入前的 EXIF 备份
 
 ## 从源码运行
 
+依赖都在 `requirements.txt` 里，按平台自动装对应的一套（Windows 是 pythonnet，macOS 是 pyobjc）。
+
+Windows：
+
 ```bash
 python -m venv .venv
-.venv/Scripts/pip install pillow pywebview piexif exifread
+.venv/Scripts/pip install -r requirements.txt
 .venv/Scripts/python app.py
+```
+
+macOS：
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python app.py
 ```
 
 可选参数：
 
 ```bash
-python app.py              # 正常启动（无边框窗口）
-python app.py --framed     # 用系统标题栏
+python app.py              # 正常启动（Windows 无边框窗口 / macOS 原生标题栏）
+python app.py --framed     # 强制用系统标题栏（macOS 本来就用系统标题栏）
 python app.py --browser    # 不开窗口，只在浏览器打开
 python app.py --port 18800 # 固定端口，方便调试
 ```
 
-打包（产物 `dist/ExifCraft/`，约 35 MB）：
+打包（`ExifCraft.spec` 按 `sys.platform` 自动分平台）：
 
 ```bash
 pip install pyinstaller
 pyinstaller --noconfirm --clean ExifCraft.spec
 ```
 
+| 平台 | 产物 | 说明 |
+|---|---|---|
+| Windows | `dist/ExifCraft/`（约 35 MB） | 整个目录即绿色版，入口 `ExifCraft.exe` |
+| macOS | `dist/ExifCraft.app`（约 37 MB） | 未签名，首次运行前先 `xattr -dr com.apple.quarantine` |
+
+macOS 版由 GitHub Actions 在 `macos-14`（Apple Silicon）上构建：`Actions → macOS arm64 → Run workflow`，产物是 dmg + zip 的 artifact，不会自动发布。
+
 ## 快捷键
+
+macOS 上把下表的 `Ctrl` 换成 `Cmd`（`⌘`），`Alt` 换成 `Option`（`⌥`）。
 
 | 按键 | 作用 |
 |---|---|
@@ -116,7 +174,7 @@ pyinstaller --noconfirm --clean ExifCraft.spec
 | `Ctrl` + `=` / `-` / `0` | 缩略图放大 / 缩小 / 复原 |
 | 双击标题栏 | 最大化 / 还原 |
 
-鼠标：Ctrl 点选、Shift 连选、空白处拖拽框选、双击看大图。
+鼠标：Ctrl（macOS 为 Cmd）点选、Shift 连选、空白处拖拽框选、双击看大图。
 
 ## 配置高德地图（可选）
 
@@ -137,9 +195,9 @@ pyinstaller --noconfirm --clean ExifCraft.spec
 
 不配置也能用全部功能：JPG 读写、所有照片浏览、CR3 的常用 EXIF 显示都是内置实现的。ExifTool 只在你想要**更完整的 CR3 元数据**时才需要，而且它在本程序里**只读不写**，任何 RAW 都不会被修改。
 
-1. 到 [exiftool.org](https://exiftool.org/) 下载 **Windows Executable**（形如 `exiftool-13.59_64.zip`），不要下 Perl 源码包
-2. 解压得到 `exiftool-13.59_64` 文件夹，里面有 `exiftool.exe` 和 `exiftool_files`。**整个文件夹要一起留着**，exe 离开它会直接报错
-3. 把整个文件夹拷到 `ExifCraft.exe` 旁边即可；也可以在 **设置 → ExifTool** 里点「选择…」指到任意位置的 `exiftool.exe`
+1. 到 [exiftool.org](https://exiftool.org/) 下载对应平台的包——Windows 选 **Windows Executable**（形如 `exiftool-13.59_64.zip`），macOS 选 **MacOS Package**（`.pkg`，装完后在 `/usr/local/bin/exiftool`）。不要下 Perl 源码包
+2. Windows：解压得到 `exiftool-13.59_64` 文件夹，里面有 `exiftool.exe` 和 `exiftool_files`。**整个文件夹要一起留着**，exe 离开它会直接报错
+3. 把整个文件夹拷到 `ExifCraft.exe` 旁边即可；macOS 上也可以是 `ExifCraft.app` 所在文件夹，或直接用 **设置 → ExifTool → 选择…** 指到 `/usr/local/bin/exiftool`
 4. 回到设置页看状态：显示版本号和「来源」（程序目录 / 设置中指定的路径）就说明接上了
 
 程序**不会**去系统 PATH 里找 ExifTool —— 避免误用你机器上别的软件自带的那一份。没有内置它，是因为它会多占约 27 MB。
@@ -179,7 +237,14 @@ CR3 的 EXIF 由内置的 ISO BMFF 解析器读取（拍摄时间、光圈、快
 
 | 计划 | 说明 |
 |---|---|
-| ① **macOS 版** | 可复用 85–90% 代码，主要工作在打包、代码签名与公证、TCC 权限 |
+| ① **macOS 代码签名与公证** | 未签名版要用户手动放行；有开发者账号后可以做到双击即开 |
+| ② **Intel Mac / universal2 构建** | 目前只出 arm64，Intel 机型只能用源码跑 |
+
+**已在 2.2 完成的**
+
+| 计划 | 说明 |
+|---|---|
+| ✅ **macOS 版** | 系统原生标题栏 + 交通灯，快捷键改用 Cmd，配置与缓存分别落在 `~/Library/Application Support/ExifCraft` 与 `~/Library/Caches/ExifCraft`；目录树支持 Finder 挂载卷与桌面/文稿/下载快速入口；由 GitHub Actions 在 `macos-14` 上出 arm64 未签名 dmg。Windows 版行为零变化 |
 
 **已在 2.0 完成的**
 
@@ -222,8 +287,8 @@ CR3 的 EXIF 由内置的 ISO BMFF 解析器读取（拍摄时间、光圈、快
 **杀毒软件报毒？**
 PyInstaller 打包的程序常被误报。可加入信任列表，或用源码方式运行。
 
-**窗口没有标题栏、拖动或缩放不顺手？**
-程序默认使用自绘标题栏（无边框窗口）：
+**窗口没有标题栏、拖动或缩放不顺手？（仅 Windows）**
+Windows 版默认使用自绘标题栏（无边框窗口）：
 - 拖动顶栏空白处移动窗口（按钮、搜索框上不会触发拖动）
 - 拖动窗口八个边缘缩放
 - 双击顶栏空白处最大化 / 还原
@@ -232,14 +297,25 @@ PyInstaller 打包的程序常被误报。可加入信任列表，或用源码�
 - 命令行运行 `ExifCraft.exe --framed`，或
 - 设置 → 通用 → 勾选「使用 Windows 系统标题栏」，重启程序
 
+macOS 版一律用系统原生标题栏与交通灯按钮，设置里没有这个选项。
+
+**macOS 提示「ExifCraft 已损坏，无法打开」？**
+不是文件坏了，是未签名 + 浏览器给下载的文件打上了隔离属性。右键 → 打开，或 `xattr -dr com.apple.quarantine /Applications/ExifCraft.app`，详见上文「macOS 首次打开」。
+
+**macOS 里某个文件夹打开是空的？**
+多半是拒绝了该目录的隐私权限——系统会静默返回空列表，不报错。到「系统设置 → 隐私与安全性 → 文件与文件夹」里勾上，然后退出重开程序。
+
 **Ctrl + 滚轮没反应？**
-先点一下缩略图区域让它获得焦点，再按 Ctrl 滚动。也可以在顶栏用滑块调整。
+先点一下缩略图区域让它获得焦点，再按 Ctrl（macOS 为 Cmd）滚动。也可以在顶栏用滑块调整。
 
 ## 项目结构
 
 ```
 ExifCraft/
-├─ app.py                启动入口（本地服务 + WebView2 窗口）
+├─ app.py                启动入口（本地服务 + WebView2 / WKWebView 窗口），按平台分支
+├─ requirements.txt      依赖清单（按 sys_platform 分 pythonnet / pyobjc）
+├─ ExifCraft.spec        PyInstaller 配置（Windows 出目录，macOS 出 .app）
+├─ .github/workflows/    macOS arm64 的 CI 出包流程
 ├─ core/
 │  ├─ server.py          本地 HTTP 服务，仅监听 127.0.0.1，带会话令牌
 │  ├─ media.py           目录扫描、缩略图生成与缓存
@@ -264,3 +340,5 @@ ExifCraft/
 [MIT](LICENSE) © Roger Niu
 
 界面文案全部为简体中文，技术术语保留英文原词（EXIF / RAW / GPS / ICC）。
+
+窗口层是 pywebview：Windows 走 WebView2（Edge Chromium），macOS 走系统自带的 WKWebView。两端共用同一份 `web/` 前端，平台差异通过 `__PM_PLATFORM__` 占位符注入。
