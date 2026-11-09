@@ -721,13 +721,14 @@ def write_meta(paths: list[str], changes: dict, deletes: list[str] | None = None
             return {"ok": 0, "failed": [], "error": msg, "backupId": ""}
 
     results = []
+    skipped = []
     for i, p in enumerate(paths):
         if job is not None and job.get("cancel"):
             job["status"] = "cancelled"
             break
-        # 所有 RAW（含 CR3）都只读，跳过而不报错，前端也不会把它们列为可写
+        # 所有 RAW（含 CR3）都只读：跳过，但不计入「失败」
         if media.kind_of(p) != "jpg":
-            results.append({"path": p, "ok": False, "error": "仅 JPG 可写入，已跳过"})
+            skipped.append({"path": p, "error": "仅 JPG 可写入，已跳过"})
         else:
             try:
                 st = os.stat(p)
@@ -753,11 +754,13 @@ def write_meta(paths: list[str], changes: dict, deletes: list[str] | None = None
         if job.get("status") == "cancelled":
             job["message"] = f"已取消，已处理 {job.get('done', 0)} / {total} 张"
         else:
-            job["message"] = f"已写入 {ok} 张" + (f"，{len(failed)} 张失败" if failed else "")
-        job["result"] = {"ok": ok, "failed": failed, "backupId": bid}
+            job["message"] = (f"已写入 {ok} 张"
+                              + (f"，{len(skipped)} 张 RAW 跳过" if skipped else "")
+                              + (f"，{len(failed)} 张失败" if failed else ""))
+        job["result"] = {"ok": ok, "failed": failed, "skipped": skipped, "backupId": bid}
     if ok and bid:
         try:
             history.add("exif", f"写入 EXIF {ok} 张", backup_id=bid)
         except Exception:
             pass
-    return {"ok": ok, "failed": failed, "backupId": bid}
+    return {"ok": ok, "failed": failed, "skipped": skipped, "backupId": bid}

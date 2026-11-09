@@ -1298,7 +1298,8 @@ async function applyEdits() {
         toast(`已取消，已处理 ${j.done} / ${j.total} 张`, '', 4200);
       } else {
         const r = j.result || {};
-        toast(`已写入 ${r.ok ?? 0} 个文件${r.failed?.length ? `，${r.failed.length} 个失败` : ''}`, 'ok');
+        const skipped = r.skipped?.length || 0;
+        toast(`已写入 ${r.ok ?? 0} 个文件${skipped ? `，${skipped} 张 RAW 跳过` : ''}${r.failed?.length ? `，${r.failed.length} 个失败` : ''}`, 'ok');
         if (r.failed?.length) toast(`失败：${r.failed[0].error}`, 'err', 5000);
       }
       for (const p of paths) S.cacheBust[p] = `&v=${Date.now()}`;
