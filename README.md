@@ -21,7 +21,7 @@
 
 ## 为什么是它
 
-- **小** — 绿色版 18.1 MB，解压即用，不写注册表；冷启动 1.5–3 秒
+- **小** — 绿色版 18.2 MB，解压即用，不写注册表；冷启动 1.5–3 秒
 - **双平台** — Windows 10/11 x64 与 macOS 11+（Apple Silicon）同一套代码；界面按平台自动切换（macOS 用系统原生标题栏，快捷键改用 Cmd）
 - **无损** — 写 EXIF 只替换 APP1 段，不重新压缩图像数据，画质零损失
 - **干净** — 界面用原生 HTML/CSS/JS，无框架无构建；后端只用 Python 标准库 + Pillow + piexif + exifread；全程不联网
@@ -32,13 +32,13 @@
 
 到 [Releases](../../releases/latest) 页面下载：
 
-> **v2.4.1 正在准备发布**：源码已包含分数快门、EXIF 复制 / 粘贴、拖入照片导入参数；下载页暂仍为 v2.2.1。
+> 最新版 **v2.4.1**（2026-11-09）。
 
 | 平台 | 文件 | 说明 |
 |---|---|---|
-| Windows 10/11 x64 | `ExifCraft-v2.2.1-win64-portable.zip`（18.1 MB） | 绿色版，解压即用，无需安装 |
-| macOS 11+ · Apple Silicon | `ExifCraft-2.2.1-macOS-arm64.dmg`（17.3 MB） | 拖进「应用程序」即可；**未签名，首次打开见下** |
-| macOS 备用 | `ExifCraft-2.2.1-macOS-arm64.zip`（16.2 MB） | 解压得到 `ExifCraft.app`，与 dmg 内容相同 |
+| Windows 10/11 x64 | `ExifCraft-v2.4.1-win64-portable.zip`（18.2 MB） | 绿色版，解压即用，无需安装 |
+| macOS 11+ · Apple Silicon | `ExifCraft-2.4.1-macOS-arm64.dmg`（17.3 MB） | 拖进「应用程序」即可；**未签名，首次打开见下** |
+| macOS 备用 | `ExifCraft-2.4.1-macOS-arm64.zip`（16.3 MB） | 解压得到 `ExifCraft.app`，与 dmg 内容相同 |
 
 **Windows**：解压后双击 `ExifCraft.exe`。首次启动会自动创建配置目录 `%LOCALAPPDATA%\ExifCraft`：
 
