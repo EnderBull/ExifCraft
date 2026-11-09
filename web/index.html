@@ -104,6 +104,16 @@
           <button class="tab active" role="tab" aria-selected="true" data-tab="info">信息</button>
           <button class="tab" role="tab" aria-selected="false" data-tab="edit">编辑</button>
         </div>
+        <div class="panel-actions">
+          <button class="btn sm rect neutral" id="btnCopyExif" title="复制这张照片的 EXIF 参数" disabled>
+            <svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></svg>
+            复制
+          </button>
+          <button class="btn sm rect neutral" id="btnPasteExif" title="粘贴已复制的 EXIF 参数" disabled>
+            <svg viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4.5V3h6v1.5M9 10h6M9 14h6M9 18h4"/></svg>
+            粘贴
+          </button>
+        </div>
       </div>
       <div id="tabInfo" class="panel-body"></div>
       <div id="tabEdit" class="panel-body" hidden></div>

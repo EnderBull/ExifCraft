@@ -106,8 +106,10 @@ const S = {
   rowH: 200,
   meta: null,
   metaPath: '',
+  metaSeq: 0,
   checked: new Set(),
   editDelete: new Set(),
+  clipExif: null,
   settings: {},
   history: [],
   hIdx: -1,
@@ -363,6 +365,7 @@ async function init() {
   bindGrid();
   bindViewer();
   bindKeys();
+  bindDropImport();
 
   await loadRoots();
   if (S.settings.last_dir) navigate(S.settings.last_dir);
@@ -908,6 +911,7 @@ function setRecursiveUi() {
 }
 
 function tabTo(name) {
+  closeCopyMenu();
   $$('.tab').forEach((t) => {
     const on = t.dataset.tab === name;
     t.classList.toggle('active', on);
@@ -919,20 +923,27 @@ function tabTo(name) {
 
 async function loadMetaForSelection() {
   const paths = Array.from(S.sel);
+  const seq = ++S.metaSeq;
   // 换了选中对象，之前标记的「将删除」不再适用
   S.editDelete.clear();
   if (paths.length === 1) {
     const p = paths[0];
     try {
       const m = await api(`/api/meta?path=${encodeURIComponent(p)}`);
+      if (seq !== S.metaSeq) return;   // 选中已变，旧请求作废
       S.meta = m;
       S.metaPath = p;
-    } catch (e) { S.meta = null; }
+    } catch (e) {
+      if (seq !== S.metaSeq) return;
+      S.meta = null;
+    }
   } else {
     S.meta = null;
     S.metaPath = '';
   }
+  if (seq !== S.metaSeq) return;
   renderInspector();
+  updateCopyPasteUi();
 }
 
 function renderInspector() {
@@ -1032,7 +1043,7 @@ const EDIT_GROUPS = [
   {
     title: '拍摄参数', fields: [
       { k: 'FNumber', label: '光圈 (f/)', type: 'number', step: '0.1', ph: '例如 2.8' },
-      { k: 'ExposureTime', label: '快门 (秒)', type: 'number', step: '0.0001', ph: '例如 0.004' },
+      { k: 'ExposureTime', label: '快门 (秒)', type: 'text', ph: '例如 1/160 或 0.00625' },
       { k: 'ISO', label: 'ISO', type: 'number', step: '1', ph: '例如 400' },
       { k: 'FocalLength', label: '焦距 (mm)', type: 'number', step: '1', ph: '例如 50' },
       { k: 'FocalLength35', label: '等效焦距', type: 'number', step: '1', ph: '例如 75' },
@@ -1229,7 +1240,7 @@ async function applyEdits() {
   let skipped = 0;
   if (!paths.some((p) => !isRaw(p))) { toast('选中的都是只读 RAW，无法写入 EXIF', 'err'); return; }
 
-  const numFields = ['FNumber', 'ExposureTime', 'ISO', 'FocalLength', 'FocalLength35', 'ExposureBias',
+  const numFields = ['FNumber', 'ISO', 'FocalLength', 'FocalLength35', 'ExposureBias',
     'WhiteBalance', 'ExposureProgram', 'MeteringMode'];
 
   for (const k of S.checked) {
@@ -1244,6 +1255,21 @@ async function applyEdits() {
       // 单张：留空即删除；多张：只有点过 × 才删除，避免忘填把一整批字段删掉
       if (single) deletes.add(k);
       else if (!S.editDelete.has(k)) skipped++;
+      continue;
+    }
+    if (k === 'ExposureTime') {
+      const t = String(v).trim().replace(/\s*s$/i, '').replace(/\s+/g, '');
+      if (!/^\d+(\.\d+)?(\/\d+(\.\d+)?)?$/.test(t)) {
+        toast('快门格式应为 1/160 或小数秒', 'err');
+        return;
+      }
+      const parts = t.split('/');
+      const sec = parts.length === 2 ? Number(parts[0]) / Number(parts[1]) : Number(t);
+      if (!(sec > 0 && sec <= 3600)) {
+        toast('快门速度需大于 0 且不超过 3600 秒', 'err');
+        return;
+      }
+      changes[k] = t;
       continue;
     }
     changes[k] = numFields.includes(k) ? Number(v) : v;
@@ -1317,6 +1343,363 @@ async function applyEdits() {
   }
 }
 
+/* ============================================================ copy / paste EXIF */
+const EDIT_FIELDS = EDIT_GROUPS.flatMap((g) => g.fields.map((f) => ({ ...f, group: g.title })));
+const GPS_FIELD = { k: 'GPS', label: 'GPS 经纬度', group: '位置', type: 'gps' };
+const ALL_EDIT_FIELDS = [...EDIT_FIELDS, GPS_FIELD];
+
+function fieldMeta(k) { return ALL_EDIT_FIELDS.find((f) => f.k === k); }
+
+function displayFieldValue(k, v) {
+  if (k === 'GPS') return v ? `${Number(v.lat).toFixed(6)}, ${Number(v.lng).toFixed(6)}` : '';
+  const f = fieldMeta(k);
+  if (f && f.type === 'select') {
+    const hit = (f.opts || []).find(([val]) => String(val) === String(v));
+    if (hit) return hit[1];
+  }
+  return v === null || v === undefined ? '' : String(v);
+}
+
+function hasFieldValue(k, meta) {
+  if (k === 'GPS') return !!(meta.gps && meta.gps.lat != null && meta.gps.lng != null);
+  const v = meta.edit ? meta.edit[k] : null;
+  return v !== null && v !== undefined && v !== '';
+}
+
+function copyFieldValue(k, meta) {
+  if (k === 'GPS') return meta.gps && meta.gps.lat != null ? { lat: meta.gps.lat, lng: meta.gps.lng } : null;
+  return meta.edit ? meta.edit[k] : null;
+}
+
+function updateCopyPasteUi() {
+  const copy = $('#btnCopyExif');
+  const paste = $('#btnPasteExif');
+  if (copy) {
+    copy.disabled = S.sel.size !== 1;
+    copy.title = S.sel.size === 1 ? '复制这张照片的 EXIF 参数' : '先选中一张照片再复制';
+  }
+  if (paste) {
+    const n = S.clipExif?.count || 0;
+    paste.disabled = !n || S.sel.size === 0;
+    paste.title = n ? `粘贴 ${n} 项 EXIF 参数` : '还没有复制任何参数';
+  }
+}
+
+async function ensureSingleMeta() {
+  const paths = Array.from(S.sel);
+  if (paths.length !== 1) return null;
+  const p = paths[0];
+  if (S.meta && S.metaPath === p) return S.meta;
+  try {
+    const m = await api(`/api/meta?path=${encodeURIComponent(p)}`);
+    S.meta = m;
+    S.metaPath = p;
+    return m;
+  } catch (e) {
+    toast(e.message, 'err');
+    return null;
+  }
+}
+
+let copyMenuEl = null;
+let copyMenuCleanup = null;
+
+function closeCopyMenu() {
+  if (copyMenuCleanup) { copyMenuCleanup(); copyMenuCleanup = null; }
+  if (copyMenuEl) { copyMenuEl.remove(); copyMenuEl = null; }
+}
+
+async function openCopyMenu() {
+  closeCopyMenu();
+  if (S.sel.size !== 1) { toast('请先选中一张照片再复制', 'err'); return; }
+  const meta = await ensureSingleMeta();
+  if (!meta) return;
+
+  const picked = new Set();
+  for (const f of ALL_EDIT_FIELDS) if (hasFieldValue(f.k, meta)) picked.add(f.k);
+  if (!picked.size) { toast('这张照片没有可复制的 EXIF 参数', ''); return; }
+
+  const pop = document.createElement('div');
+  pop.className = 'exif-pop';
+  pop.id = 'exifPop';
+  let body = '';
+  const groups = EDIT_GROUPS.map((g) => ({ title: g.title, fields: g.fields }));
+  groups.push({ title: '位置', fields: [GPS_FIELD] });
+  for (const g of groups) {
+    body += `<div class="group-title">${g.title}</div>`;
+    for (const f of g.fields) {
+      const has = hasFieldValue(f.k, meta);
+      const val = has ? displayFieldValue(f.k, copyFieldValue(f.k, meta)) : '空';
+      body += `<label class="copy-row${has ? '' : ' dis'}">
+        <input type="checkbox" data-copy-key="${f.k}" ${has ? 'checked' : 'disabled'}>
+        <span class="copy-name">${f.label}</span>
+        <span class="copy-val" title="${esc(val)}">${esc(val)}</span>
+      </label>`;
+    }
+  }
+  pop.innerHTML = `<div class="exif-pop-head"><b>复制哪些参数</b><span id="copyCount">已选 ${picked.size} 项</span></div>
+    <div class="exif-pop-body">${body}</div>
+    <div class="exif-pop-foot">
+      <button class="btn sm ghost" id="copyAll">全选</button>
+      <button class="btn sm ghost" id="copyNone">清空</button>
+      <span class="tool-spacer"></span>
+      <button class="btn sm primary" id="copyGo">复制 ${picked.size} 项</button>
+    </div>`;
+  document.body.appendChild(pop);
+  copyMenuEl = pop;
+
+  const rect = $('#btnCopyExif').getBoundingClientRect();
+  const iw = $('#inspector').getBoundingClientRect().width;
+  const width = Math.max(220, Math.min(300, iw - 16));
+  const maxH = Math.min(430, window.innerHeight - 80);
+  pop.style.width = `${width}px`;
+  pop.style.maxHeight = `${maxH}px`;
+  // 菜单贴右栏右边，避免向左盖住缩略图网格
+  pop.style.right = '8px';
+  pop.style.top = `${rect.bottom + 6 + maxH > window.innerHeight - 8 ? Math.max(8, rect.top - maxH - 6) : rect.bottom + 6}px`;
+
+  const sync = () => {
+    const n = picked.size;
+    const cnt = $('#copyCount', pop);
+    if (cnt) cnt.textContent = `已选 ${n} 项`;
+    const go = $('#copyGo', pop);
+    if (go) { go.textContent = `复制 ${n} 项`; go.disabled = n === 0; }
+  };
+  $$('[data-copy-key]', pop).forEach((cb) => {
+    cb.onchange = () => {
+      if (cb.checked) picked.add(cb.dataset.copyKey); else picked.delete(cb.dataset.copyKey);
+      sync();
+    };
+  });
+  $('#copyAll', pop).onclick = () => {
+    $$('[data-copy-key]', pop).forEach((cb) => { if (!cb.disabled) { cb.checked = true; picked.add(cb.dataset.copyKey); } });
+    sync();
+  };
+  $('#copyNone', pop).onclick = () => {
+    $$('[data-copy-key]', pop).forEach((cb) => { cb.checked = false; });
+    picked.clear();
+    sync();
+  };
+  $('#copyGo', pop).onclick = () => {
+    if (!picked.size) return;
+    const values = {};
+    let gps = null;
+    for (const k of picked) {
+      if (k === 'GPS') gps = copyFieldValue('GPS', meta);
+      else values[k] = copyFieldValue(k, meta);
+    }
+    S.clipExif = { values, gps, count: picked.size, from: meta.file.name };
+    updateCopyPasteUi();
+    closeCopyMenu();
+    toast(`已复制 ${picked.size} 项参数`, 'ok');
+  };
+
+  const onDoc = (e) => {
+    if (!pop.contains(e.target) && !e.target.closest('#btnCopyExif')) closeCopyMenu();
+  };
+  const onKey = (e) => { if (e.key === 'Escape') closeCopyMenu(); };
+  setTimeout(() => document.addEventListener('mousedown', onDoc), 0);
+  document.addEventListener('keydown', onKey);
+  copyMenuCleanup = () => {
+    document.removeEventListener('mousedown', onDoc);
+    document.removeEventListener('keydown', onKey);
+  };
+}
+
+/* 把一组 EXIF 值填进当前编辑表单：只改表单，不写文件 */
+function fillEditForm(values = {}, gps = null, keys = null) {
+  const box = $('#tabEdit');
+  if (!box || !S.sel.size) return 0;
+  if (Array.from(S.sel).every(isRaw)) {
+    toast('选中的都是 RAW，不能写入；请先选一张 JPG', 'err', 4200);
+    return 0;
+  }
+  tabTo('edit');
+  let n = 0;
+  for (const k of (keys || Object.keys(values))) {
+    if (k === 'GPS') continue;
+    const v = values[k];
+    if (v === null || v === undefined || v === '') continue;
+    const el = box.querySelector(`[data-k="${k}"]`);
+    if (!el) continue;
+    let out = String(v);
+    if (el.type === 'datetime-local') out = out.replace(' ', 'T');
+    el.value = out;
+    S.checked.add(k);
+    S.editDelete.delete(k);
+    const field = el.closest('.field');
+    field.classList.add('on');
+    syncEditFieldState(field, k);
+    n++;
+  }
+  if (gps && gps.lat != null && gps.lng != null) {
+    const lat = box.querySelector('[data-gps="lat"]');
+    const lng = box.querySelector('[data-gps="lng"]');
+    if (lat && lng) {
+      lat.value = gps.lat;
+      lng.value = gps.lng;
+      S.checked.add('GPS');
+      S.editDelete.delete('GPS');
+      const field = box.querySelector('[data-field="GPS"]');
+      field.classList.add('on');
+      syncEditFieldState(field, 'GPS');
+      n++;
+    }
+  }
+  return n;
+}
+
+async function pasteClipboard() {
+  if (!S.clipExif || !S.clipExif.count) { toast('还没有复制任何参数', 'err'); return; }
+  if (!S.sel.size) { toast('请先选中要粘贴的照片', 'err'); return; }
+  if (Array.from(S.sel).every(isRaw)) { toast('选中的都是 RAW，不能写入', 'err', 4200); return; }
+  // 单张选中时如果元数据还没读完，先等表单渲染好，避免粘贴后被异步刷新覆盖
+  if (S.sel.size === 1 && S.metaPath !== Array.from(S.sel)[0]) {
+    await loadMetaForSelection();
+  }
+  if (!S.sel.size || Array.from(S.sel).every(isRaw)) return;
+  const keys = Object.keys(S.clipExif.values || {});
+  if (S.clipExif.gps) keys.push('GPS');
+  const n = fillEditForm(S.clipExif.values || {}, S.clipExif.gps, keys);
+  if (n) toast(`已粘贴 ${n} 项参数，检查后点「应用」写入`, 'ok', 4200);
+}
+
+/* ============================================================ drag & drop import */
+function bindDropImport() {
+  const insp = $('#inspector');
+  if (!insp) return;
+  let depth = 0;
+  const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+
+  insp.addEventListener('dragenter', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    depth++;
+    insp.classList.add('drop-active');
+  });
+  insp.addEventListener('dragover', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  insp.addEventListener('dragleave', () => {
+    depth = Math.max(0, depth - 1);
+    if (!depth) insp.classList.remove('drop-active');
+  });
+  insp.addEventListener('drop', async (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    depth = 0;
+    insp.classList.remove('drop-active');
+    const files = Array.from(e.dataTransfer.files || []);
+    if (!files.length) return;
+    if (files.length > 1) toast('一次只导入一张照片，已取第一张', '', 3000);
+    await importDroppedFile(files[0]);
+  });
+
+  // 拖到右侧栏以外时也要拦住，否则 WebView 会直接打开图片，把界面顶掉
+  window.addEventListener('dragover', (e) => { if (hasFiles(e)) e.preventDefault(); });
+  window.addEventListener('drop', (e) => { if (hasFiles(e)) e.preventDefault(); });
+}
+
+async function importDroppedFile(file) {
+  if (!S.sel.size) { toast('请先选中要修改的照片，再拖入照片', 'err', 4200); return; }
+  if (Array.from(S.sel).every(isRaw)) { toast('选中的都是 RAW，不能写入；请先选一张 JPG', 'err', 4200); return; }
+  const name = file.name || 'photo.jpg';
+  if (!/\.(jpe?g|jpe|jfif)$/i.test(name) && !RAW_RE.test(name)) {
+    toast('只支持 JPG 和 RAW 照片', 'err');
+    return;
+  }
+  if (file.size > 200 * 1024 * 1024) {
+    toast('文件超过 200 MB，暂不支持导入', 'err', 4200);
+    return;
+  }
+  const tip = toast('正在读取拖入照片的 EXIF…', '', 0);
+  try {
+    const res = await fetch('/api/meta-upload', {
+      method: 'POST',
+      headers: {
+        'X-PM-Token': TOKEN,
+        'X-File-Name': encodeURIComponent(name),
+        'Content-Type': 'application/octet-stream',
+      },
+      body: file,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `读取失败 (${res.status})`);
+    tip.remove();
+    openImportDialog(data, name);
+  } catch (e) {
+    tip.remove();
+    toast(e.message || String(e), 'err', 5000);
+  }
+}
+
+function openImportDialog(meta, name) {
+  const picked = new Set();
+  for (const f of ALL_EDIT_FIELDS) if (hasFieldValue(f.k, meta)) picked.add(f.k);
+  if (!picked.size) { toast('这张照片没有可导入的 EXIF 参数', ''); return; }
+
+  let body = `<div class="hint">只读取「${esc(name)}」的 EXIF，<b>不会修改这张照片</b>。确认后填入当前编辑面板，检查无误再点「应用」写入。</div>`;
+  const groups = EDIT_GROUPS.map((g) => ({ title: g.title, fields: g.fields }));
+  groups.push({ title: '位置', fields: [GPS_FIELD] });
+  for (const g of groups) {
+    body += `<div class="group-title">${g.title}</div>`;
+    for (const f of g.fields) {
+      const has = hasFieldValue(f.k, meta);
+      const val = has ? displayFieldValue(f.k, copyFieldValue(f.k, meta)) : '空';
+      body += `<label class="copy-row${has ? '' : ' dis'}">
+        <input type="checkbox" data-import-key="${f.k}" ${has ? 'checked' : 'disabled'}>
+        <span class="copy-name">${f.label}</span>
+        <span class="copy-val" title="${esc(val)}">${esc(val)}</span>
+      </label>`;
+    }
+  }
+
+  const m = modal({
+    title: `从「${name}」导入 EXIF`,
+    size: 'wide',
+    body,
+    foot: `<div class="tool-spacer"></div>
+           <button class="btn ghost" id="importCancel">取消</button>
+           <button class="btn ghost" id="importAll">全选</button>
+           <button class="btn ghost" id="importNone">清空</button>
+           <button class="btn primary" id="importGo">导入 ${picked.size} 项</button>`,
+  });
+
+  const sync = () => {
+    const n = picked.size;
+    const go = $('#importGo', m);
+    if (go) { go.textContent = `导入 ${n} 项`; go.disabled = n === 0; }
+  };
+  $$('[data-import-key]', m).forEach((cb) => {
+    cb.onchange = () => {
+      if (cb.checked) picked.add(cb.dataset.importKey); else picked.delete(cb.dataset.importKey);
+      sync();
+    };
+  });
+  $('#importAll', m).onclick = () => {
+    $$('[data-import-key]', m).forEach((cb) => { if (!cb.disabled) { cb.checked = true; picked.add(cb.dataset.importKey); } });
+    sync();
+  };
+  $('#importNone', m).onclick = () => {
+    $$('[data-import-key]', m).forEach((cb) => { cb.checked = false; });
+    picked.clear();
+    sync();
+  };
+  $('#importCancel', m).onclick = () => closeModal();
+  $('#importGo', m).onclick = async () => {
+    if (!picked.size) return;
+    if (S.sel.size === 1 && S.metaPath !== Array.from(S.sel)[0]) {
+      await loadMetaForSelection();
+    }
+    const keys = [...picked];
+    const n = fillEditForm(meta.edit || {}, meta.gps || null, keys);
+    closeModal();
+    if (n) toast(`已导入 ${n} 项参数，检查后点「应用」写入`, 'ok', 4200);
+  };
+}
+
 /* ============================================================ action bar */
 function updateActionBar() {
   const bar = $('#actionbar');
@@ -1325,6 +1708,7 @@ function updateActionBar() {
   bar.classList.toggle('show', n > 0);
   $('#abCount').textContent = `已选 ${n} 张`;
   updateStatus();
+  updateCopyPasteUi();
 }
 
 function updateStatus() {
@@ -1341,6 +1725,8 @@ function updateStatus() {
 
 /* ============================================================ toolbar */
 function bindToolbar() {
+  $('#btnCopyExif').onclick = openCopyMenu;
+  $('#btnPasteExif').onclick = pasteClipboard;
   // 顶栏同时是窗口拖拽区：控件上的 mousedown 不冒泡到 body，避免拖窗口抢走交互
   $('#toolbar').addEventListener('mousedown', (e) => {
     if (e.target.closest('button, input, select, .search, .zoom-ctl, .mini-select, .winctl')) {
@@ -1996,7 +2382,7 @@ function openSettings() {
       </div>
       <div id="stAbout" hidden>
         <div class="group-title">ExifCraft</div>
-        <div class="kv"><span class="k">版本</span><span class="v">2.3.0</span></div>
+        <div class="kv"><span class="k">版本</span><span class="v">2.4.0</span></div>
         <div class="kv"><span class="k">支持</span><span class="v">JPG 读写 EXIF · RAW（含 CR3）只读</span></div>
         <div class="kv"><span class="k">ExifTool</span><span class="v small">${S.etAvailable ? '已调用 v' + esc(S.et.version || '') + '（仅用于读取 CR3）' : '未调用（可选）'}</span></div>
         <div class="kv"><span class="k">配置</span><span class="v small">${esc(CONFIG_DIR_LABEL)}</span></div>

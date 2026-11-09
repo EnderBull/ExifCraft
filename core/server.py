@@ -7,6 +7,7 @@ import os
 import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 import traceback
 import urllib.parse
@@ -103,6 +104,52 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _upload_meta(self):
+        """接收拖入的图片字节，写到临时文件解析 EXIF，解析完立即删除。
+
+        WebView2 不把本地完整路径暴露给网页，所以前端直接发文件内容；
+        临时文件保留原扩展名，RAW 的内嵌预览 / 尺寸解析仍走原有代码。
+        """
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except (TypeError, ValueError):
+            length = 0
+        if length <= 0:
+            return self._err("缺少文件内容", 400)
+        if length > 200 * 1024 * 1024:
+            return self._err("文件超过 200 MB，暂不支持导入", 413)
+
+        name = os.path.basename(urllib.parse.unquote(self.headers.get("X-File-Name") or "drop.jpg"))
+        ext = os.path.splitext(name)[1].lower()
+        if ext not in media.ALL_EXT:
+            return self._err("只支持 JPG 和 RAW 照片", 400)
+
+        tmp = None
+        try:
+            fd, tmp = tempfile.mkstemp(prefix="exifcraft-drop-", suffix=ext)
+            remaining = length
+            with os.fdopen(fd, "wb") as f:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    remaining -= len(chunk)
+            if remaining != 0:
+                return self._err("文件传输不完整", 400)
+            meta = exifio.read_meta(tmp)
+            meta["source"] = {"name": name, "size": length}
+            return self._json(meta)
+        except Exception as e:
+            traceback.print_exc()
+            return self._err(f"{type(e).__name__}: {e}", 500)
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+
     # ------------------------------------------------------------ GET
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -179,6 +226,9 @@ class Handler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
         if not self._authed(query):
             return self._err("unauthorized", 401)
+        # 拖入的照片是二进制流，必须在解析 JSON 之前分流，否则会被 _body 吃掉
+        if path == "/api/meta-upload":
+            return self._upload_meta()
         data = self._body()
 
         try:

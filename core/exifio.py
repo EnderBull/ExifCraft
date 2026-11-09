@@ -95,15 +95,52 @@ def _first_num(tag) -> float | None:
         return None
 
 
+def _shutter_fraction(v: float) -> Fraction | None:
+    """把秒数还原成最接近的分数，用于显示与写入。"""
+    try:
+        return Fraction(v).limit_denominator(1_000_000)
+    except (ValueError, OverflowError):
+        return None
+
+
 def _fmt_shutter(v: float) -> str:
     if v <= 0:
         return ""
-    if v >= 1:
-        return f"{v:g} s"
-    denom = round(1 / v)
-    if denom <= 0:
-        return f"{v:g} s"
-    return f"1/{denom} s"
+    fr = _shutter_fraction(v)
+    if fr and fr.numerator == 1:
+        return f"1/{fr.denominator} s"
+    return f"{v:g} s"
+
+
+def _shutter_input(v: float) -> str:
+    """编辑面板里的值：能写成 1/x 就写分数，否则写小数秒。"""
+    if not v or v <= 0:
+        return ""
+    fr = _shutter_fraction(v)
+    if fr and fr.numerator == 1:
+        return f"1/{fr.denominator}"
+    return f"{v:g}"
+
+
+def _parse_shutter(text) -> float:
+    """解析 1/160、1/160 s、0.00625、2.5 这类写法，返回秒数。"""
+    s = str(text or "").strip().lower().replace("秒", "").replace("s", "").strip()
+    s = s.replace(" ", "")
+    if not s:
+        raise ValueError("快门速度不能为空")
+    try:
+        if "/" in s:
+            a, b = s.split("/", 1)
+            v = float(a) / float(b)
+        else:
+            v = float(s)
+    except ZeroDivisionError:
+        raise ValueError("快门分母不能为 0")
+    except (TypeError, ValueError):
+        raise ValueError("快门格式应为 1/160 或小数秒")
+    if not (0 < v <= 3600):
+        raise ValueError("快门速度需大于 0 且不超过 3600 秒")
+    return v
 
 
 def _parse_dt(text: str) -> str:
@@ -280,7 +317,7 @@ def read_meta(path: str) -> dict:
     put("FNumber", "光圈", "shoot", f"f/{fnum:g}" if fnum else "—", fnum)
 
     shut = _first_num(_tag(tags, "EXIF ExposureTime"))
-    put("ExposureTime", "快门", "shoot", _fmt_shutter(shut) if shut else "—", shut)
+    put("ExposureTime", "快门", "shoot", _fmt_shutter(shut) if shut else "—", _shutter_input(shut))
 
     iso = _first_num(_tag(tags, "EXIF ISOSpeedRatings", "EXIF PhotographicSensitivity"))
     put("ISO", "ISO", "shoot", f"{int(iso)}" if iso else "—", int(iso) if iso else None)
@@ -470,11 +507,9 @@ def _apply(d: dict, changes: dict, deletes: list[str] | None = None) -> None:
         e[piexif.ExifIFD.FNumber] = _ratio(float(changes["FNumber"]))
         e[piexif.ExifIFD.ApertureValue] = _ratio(float(changes["FNumber"]))
     if has("ExposureTime"):
-        v = float(changes["ExposureTime"])
-        if v >= 1:
-            e[piexif.ExifIFD.ExposureTime] = (int(round(v * 10)), 10)
-        else:
-            e[piexif.ExifIFD.ExposureTime] = (1, max(1, int(round(1 / v))))
+        v = _parse_shutter(changes["ExposureTime"])
+        fr = _shutter_fraction(v) or Fraction(round(v * 10000), 10000)
+        e[piexif.ExifIFD.ExposureTime] = (fr.numerator, fr.denominator)
     if has("ISO"):
         e[piexif.ExifIFD.ISOSpeedRatings] = int(changes["ISO"])
     if has("FocalLength"):

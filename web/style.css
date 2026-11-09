@@ -639,6 +639,24 @@ input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 7px co
 }
 #inspector .panel-head { height: 44px; padding: 0 6px 0 4px; }
 
+/* 右栏顶部的复制 / 粘贴：贴紧右边，圆角矩形 + 中性色 */
+.panel-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+.panel-actions .btn {
+  height: 28px;
+  padding: 0 8px;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.panel-actions .btn svg { width: 14px; height: 14px; }
+.panel-actions .btn:disabled { opacity: .38; pointer-events: none; }
+
 /* M3 primary tab：选中项底部指示条 */
 .tabs { display: flex; gap: 0; }
 .tab {
@@ -1079,6 +1097,9 @@ input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 7px co
 .btn.danger { background: transparent; color: var(--md-error); }
 .btn.sm { height: 28px; padding: 0 12px; font: var(--md-typescale-label-l); }
 .btn.wide { width: 100%; }
+/* 圆边矩形 + 中性色：用于右栏复制 / 粘贴这类辅助动作 */
+.btn.rect { border-radius: var(--md-shape-sm); }
+.btn.neutral { background: var(--md-surface-container-high); color: var(--md-on-surface); }
 
 .apply-bar {
   position: sticky;
@@ -1139,12 +1160,88 @@ input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 7px co
 
 /* ============================================================ modal */
 #modalRoot:empty { display: none; }
+/* 右栏「复制」的二级菜单：fixed 挂到 body，避免被 inspector 的 overflow 裁掉 */
+.exif-pop {
+  position: fixed;
+  z-index: 3000;
+  display: flex;
+  flex-direction: column;
+  background: var(--md-surface-container-high);
+  border: 1px solid var(--md-outline-variant);
+  border-radius: var(--md-shape-md);
+  box-shadow: var(--md-elev-3);
+  overflow: hidden;
+}
+.exif-pop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px 8px;
+  font: var(--md-typescale-label-l);
+  color: var(--md-on-surface);
+  flex: none;
+}
+.exif-pop-head span { color: var(--md-on-surface-variant); font-weight: 400; }
+.exif-pop-body { overflow-y: auto; padding: 0 8px 6px; flex: 1; }
+.exif-pop-body .group-title { margin: 8px 6px 4px; }
+.exif-pop-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--md-outline-variant);
+  flex: none;
+}
+.copy-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 3px 6px;
+  border-radius: var(--md-shape-xs);
+  cursor: pointer;
+  font: var(--md-typescale-body-m);
+  color: var(--md-on-surface);
+}
+.copy-row:hover { background: color-mix(in oklab, currentColor 6%, transparent); }
+.copy-row.dis { opacity: .45; cursor: default; }
+.copy-row input { width: 15px; height: 15px; accent-color: var(--md-primary); flex: none; }
+.copy-name { flex: none; width: 76px; color: var(--md-on-surface-variant); font-size: 12.5px; }
+.copy-val {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  font-size: 12px;
+  color: var(--md-on-surface);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 拖入照片时右栏的虚线高亮 */
+#inspector.drop-active::after {
+  content: "松开以读取这张照片的 EXIF";
+  position: absolute;
+  inset: 6px;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--md-primary);
+  border-radius: var(--md-shape-md);
+  background: color-mix(in oklab, var(--md-primary) 10%, var(--md-surface-container-low));
+  color: var(--md-primary);
+  font: var(--md-typescale-label-xl);
+  pointer-events: none;
+}
+
 .scrim {
   position: fixed; inset: 0;
   background: var(--md-scrim);
   display: grid;
   place-items: center;
-  z-index: 100;
+  z-index: 1000;
   animation: fade var(--md-dur-med) var(--md-ease-standard);
 }
 @keyframes fade { from { opacity: 0; } }
