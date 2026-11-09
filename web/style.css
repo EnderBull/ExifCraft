@@ -779,6 +779,10 @@ input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 7px co
   color: var(--md-on-surface-muted);
 }
 .thumb .ph svg { width: 20px; height: 20px; opacity: .5; }
+/* 缩略图生成失败：给明确占位，而不是留白 */
+.cell.thumb-fail .thumb { background: color-mix(in oklab, var(--md-error) 5%, var(--md-surface-container)); }
+.cell.thumb-fail .thumb .ph::after { display: none; }
+.thumb-fail-text { font-size: 11px; color: var(--md-on-surface-muted); letter-spacing: .02em; }
 /* 正在下载时用 M3 circular progress 取代静态占位图标 */
 .thumb .ph::after {
   content: "";
@@ -935,9 +939,52 @@ input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 7px co
   gap: 8px;
   padding: 7px 0;
   align-items: center;
+  position: relative;
 }
 /* .body 只是分组用的壳，display:contents 让 label / input 直接成为网格项 */
 .field .body { display: contents; }
+.field .field-head { display: contents; }
+
+/* 字段右侧的「删除」小按钮：绝对定位，不占网格列 */
+.field .field-clear {
+  position: absolute;
+  right: 2px;
+  top: 7px;
+  width: 22px; height: 26px;
+  display: none;
+  place-items: center;
+  border: 0;
+  border-radius: var(--md-shape-xs);
+  background: transparent;
+  color: var(--md-on-surface-variant);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 2;
+}
+.field.on .field-clear { display: grid; }
+.field .field-clear:hover { background: color-mix(in oklab, currentColor 12%, transparent); }
+.field .field-clear.active { color: var(--md-error); background: color-mix(in oklab, var(--md-error) 14%, transparent); }
+.field.on input[type=text], .field.on input[type=number], .field.on input[type=datetime-local],
+.field.on select, .field.on textarea { padding-right: 26px; }
+
+/* 标记为删除的字段：红框 + 红字，输入框已 disabled */
+.field.del input, .field.del select, .field.del textarea {
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--md-error) 70%, transparent);
+  color: var(--md-error);
+  opacity: 1;
+}
+.del-note {
+  grid-column: 3;
+  grid-row: 2;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--md-error);
+  margin-top: 1px;
+}
+.field[data-field="GPS"] .del-note { grid-row: 3; }
+/* GPS 区块底部留一点空间，避免删除提示贴住底部操作条 */
+.field[data-field="GPS"] { padding-bottom: 14px; }
 
 /* M3 checkbox 18×18 */
 .field .cb {
@@ -1004,6 +1051,8 @@ input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 7px co
 /* GPS 行：两个输入框 + 两个按钮都落在输入框那一列 */
 .gps-row { display: flex; gap: 6px; grid-column: 3; }
 .gps-row input { flex: 1; min-width: 0; font-variant-numeric: tabular-nums; }
+/* GPS 没有小 × 按钮，恢复普通内边距 */
+.field.on[data-field="GPS"] .gps-row input { padding-right: 9px; }
 .gps-actions { display: flex; gap: 8px; grid-column: 2 / -1; margin-top: 2px; }
 .gps-actions.top { margin-top: 16px; }
 

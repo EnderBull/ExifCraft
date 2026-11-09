@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import io
 import mmap
+import os
 import struct
+import threading
 
 from PIL import Image
 
@@ -381,7 +383,7 @@ def first_jpeg(path: str) -> bytes | None:
     return None
 
 
-def preview_size(path: str) -> tuple[int, int] | None:
+def _preview_size(path: str) -> tuple[int, int] | None:
     """内嵌预览的像素尺寸（只读图像头，不解像素）。"""
     try:
         with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as mm:
@@ -401,7 +403,7 @@ def preview_size(path: str) -> tuple[int, int] | None:
     return None
 
 
-def full_size(path: str) -> tuple[int, int] | None:
+def _full_size(path: str) -> tuple[int, int] | None:
     """实际像素尺寸（裁掉暗角后的那张，与 ExifTool 的 ImageSize 同口径）。
 
     - RAF：meta 块 tag 0x0112（11648x8736）；取不到才退回 Fuji 私有 IFD 的未裁切尺寸；
@@ -433,3 +435,38 @@ def full_size(path: str) -> tuple[int, int] | None:
             return best
     except (OSError, ValueError):
         return None
+
+
+# ------------------------------------------------------------- 尺寸缓存
+# 选中一张 RAW 时 read_meta 会分别取「实际尺寸」和「内嵌预览尺寸」，
+# 以前每次都要重新 mmap 扫一遍容器。缓存按 路径 + 修改时间 + 大小 命中，
+# 文件一变（例如被替换）缓存自动失效。
+_SIZE_CACHE: dict[tuple, tuple[int, int] | None] = {}
+_SIZE_LOCK = threading.Lock()
+_SIZE_MAX = 512
+
+
+def _cached_size(path: str, fn) -> tuple[int, int] | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    key = (os.path.abspath(path), int(st.st_mtime), st.st_size)
+    with _SIZE_LOCK:
+        if key in _SIZE_CACHE:
+            return _SIZE_CACHE[key]
+    val = fn(path)
+    with _SIZE_LOCK:
+        if len(_SIZE_CACHE) >= _SIZE_MAX:
+            for k in list(_SIZE_CACHE)[: _SIZE_MAX // 2]:
+                _SIZE_CACHE.pop(k, None)
+        _SIZE_CACHE[key] = val
+    return val
+
+
+def preview_size(path: str) -> tuple[int, int] | None:
+    return _cached_size(path, _preview_size)
+
+
+def full_size(path: str) -> tuple[int, int] | None:
+    return _cached_size(path, _full_size)

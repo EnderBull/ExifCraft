@@ -16,7 +16,7 @@ from fractions import Fraction
 import exifread
 import piexif
 
-from . import config, exiftool, iso_bmff, media
+from . import config, exiftool, history, iso_bmff, media
 
 # ---------------------------------------------------------------- 展示元数据
 
@@ -48,6 +48,27 @@ FIELD_DEFS = [
     ("Copyright", "版权", "author", True),
     ("ImageDescription", "说明", "author", True),
 ]
+
+# 删除字段时实际要移除的标签。一个界面上字段往往对应多个 EXIF 标签，
+# 只删其中一个会留下「改了但没删干净」的残值。
+_DELETE_MAP = {
+    "DateTimeOriginal": [("Exif", "DateTimeOriginal"), ("Exif", "DateTimeDigitized"), ("0th", "DateTime")],
+    "Make": [("0th", "Make")],
+    "Model": [("0th", "Model")],
+    "LensModel": [("Exif", "LensModel")],
+    "FNumber": [("Exif", "FNumber"), ("Exif", "ApertureValue")],
+    "ExposureTime": [("Exif", "ExposureTime"), ("Exif", "ShutterSpeedValue")],
+    "ISO": [("Exif", "ISOSpeedRatings"), ("Exif", "PhotographicSensitivity")],
+    "FocalLength": [("Exif", "FocalLength")],
+    "FocalLength35": [("Exif", "FocalLengthIn35mmFilm")],
+    "ExposureBias": [("Exif", "ExposureBiasValue")],
+    "WhiteBalance": [("Exif", "WhiteBalance")],
+    "ExposureProgram": [("Exif", "ExposureProgram")],
+    "MeteringMode": [("Exif", "MeteringMode")],
+    "Artist": [("0th", "Artist")],
+    "Copyright": [("0th", "Copyright")],
+    "ImageDescription": [("0th", "ImageDescription")],
+}
 
 
 def _tag(tags: dict, *names):
@@ -201,7 +222,9 @@ def _read_cr3_tags(path: str) -> tuple[dict, dict]:
 
 def read_meta(path: str) -> dict:
     """返回 {fields: [...], edit: {...}, gps: {...}, file: {...}}"""
-    kind = media.kind_of(path) or "jpg"
+    # 不在支持列表里的扩展名（tif / heic 等）标记为 other：只读展示，
+    # 不能像以前那样回退成 jpg，否则界面会显示「可写」但写入时被跳过。
+    kind = media.kind_of(path) or "other"
     tags: dict = {}
     cr3_gps: dict = {"lat": None, "lng": None, "alt": None}
     if media.is_cr3(path):
@@ -403,7 +426,24 @@ def _load_exif(path: str) -> dict:
     return d
 
 
-def _apply(d: dict, changes: dict) -> None:
+def _apply_deletes(d: dict, deletes: list[str] | None) -> None:
+    """按字段名删除已有标签。GPS 直接清空整个 GPS IFD。"""
+    for key in deletes or []:
+        if key == "GPS":
+            d["GPS"] = {}
+            continue
+        for ifd_name, tag_name in _DELETE_MAP.get(key, []):
+            ifd = d.get(ifd_name)
+            if not isinstance(ifd, dict):
+                continue
+            tag = getattr(piexif.ExifIFD if ifd_name == "Exif" else piexif.ImageIFD, tag_name, None)
+            if tag is not None:
+                ifd.pop(tag, None)
+
+
+def _apply(d: dict, changes: dict, deletes: list[str] | None = None) -> None:
+    # 先删后写：同一字段既出现在 deletes 又出现在 changes 时，以写入为准
+    _apply_deletes(d, deletes)
     z, e, g = d["0th"], d["Exif"], d["GPS"]
 
     def has(k):
@@ -563,10 +603,67 @@ def list_backups() -> list[dict]:
                 "id": d.get("id", p.stem),
                 "time": d.get("time", 0),
                 "count": len(d.get("entries", [])),
+                "size": p.stat().st_size,
             })
         except Exception:
             continue
     return out[:50]
+
+
+def backup_stats() -> dict:
+    """备份目录当前占用（份数 / 字节）。"""
+    count = 0
+    total = 0
+    for p in config.backup_dir().glob("*.json"):
+        try:
+            total += p.stat().st_size
+            count += 1
+        except OSError:
+            pass
+    return {"count": count, "bytes": total}
+
+
+def prune_backups(keep: int = 20) -> dict:
+    """只保留最近 keep 份备份。由用户在设置页明确点击触发。"""
+    keep = max(1, int(keep))
+    files = sorted(config.backup_dir().glob("*.json"), reverse=True)
+    removed = 0
+    freed = 0
+    for p in files[keep:]:
+        try:
+            freed += p.stat().st_size
+            p.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return {"removed": removed, "freed": freed, **backup_stats()}
+
+
+def maybe_auto_prune_backups() -> dict | None:
+    """按配置的自动上限清理最旧备份；默认关闭，至少保留 5 份。"""
+    cfg = config.load()
+    if not cfg.get("backup_auto_limit"):
+        return None
+    try:
+        max_bytes = max(20, int(cfg.get("backup_max_mb") or 500)) * 1024 * 1024
+    except (TypeError, ValueError):
+        max_bytes = 500 * 1024 * 1024
+    stats = backup_stats()
+    if stats["bytes"] <= max_bytes:
+        return None
+    files = sorted(config.backup_dir().glob("*.json"), reverse=True)
+    removed = 0
+    freed = 0
+    for p in files[5:]:
+        if stats["bytes"] - freed <= int(max_bytes * 0.9):
+            break
+        try:
+            freed += p.stat().st_size
+            p.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return {"removed": removed, "freed": freed, **backup_stats()}
 
 
 def restore_backup(bid: str) -> dict:
@@ -597,32 +694,70 @@ def restore_backup(bid: str) -> dict:
     return {"ok": ok, "failed": failed}
 
 
-def write_meta(paths: list[str], changes: dict, backup: bool = True) -> dict:
-    if backup:
+def write_meta(paths: list[str], changes: dict, deletes: list[str] | None = None,
+               backup: bool = True, job: dict | None = None) -> dict:
+    """批量写 EXIF。传入 job 时按张更新进度并支持取消。
+
+    deletes 里的字段会被移除（GPS 清空整个 IFD）；changes 里的字段写入新值。
+    备份失败时直接中止，不带病写入——否则出问题无法回滚。
+    """
+    changes = changes or {}
+    deletes = deletes or []
+    total = len(paths)
+    jpg_paths = [p for p in paths if media.kind_of(p) == "jpg"]
+
+    bid = ""
+    if backup and jpg_paths:
         try:
-            backup_files(paths)
-        except Exception:
-            pass
+            rec = backup_files(jpg_paths)
+            bid = rec.get("id") or ""
+            maybe_auto_prune_backups()
+        except Exception as ex:
+            msg = f"备份失败，已中止写入：{ex}"
+            if job is not None:
+                job["status"] = "error"
+                job["message"] = msg
+                job["errors"].append({"path": "", "error": msg})
+            return {"ok": 0, "failed": [], "error": msg, "backupId": ""}
 
     results = []
-    for p in paths:
+    for i, p in enumerate(paths):
+        if job is not None and job.get("cancel"):
+            job["status"] = "cancelled"
+            break
         # 所有 RAW（含 CR3）都只读，跳过而不报错，前端也不会把它们列为可写
         if media.kind_of(p) != "jpg":
-            results.append({"path": p, "ok": False, "error": "RAW 文件只读，已跳过"})
-            continue
-        try:
-            st = os.stat(p)
-            d = _load_exif(p)
-            _apply(d, changes)
-            blob = piexif.dump(d)
-            piexif.insert(blob, p)
+            results.append({"path": p, "ok": False, "error": "仅 JPG 可写入，已跳过"})
+        else:
             try:
-                os.utime(p, (st.st_atime, st.st_mtime))
-            except OSError:
-                pass
-            results.append({"path": p, "ok": True})
-        except Exception as ex:
-            results.append({"path": p, "ok": False, "error": f"{type(ex).__name__}: {ex}"})
+                st = os.stat(p)
+                d = _load_exif(p)
+                _apply(d, changes, deletes)
+                blob = piexif.dump(d)
+                piexif.insert(blob, p)
+                try:
+                    os.utime(p, (st.st_atime, st.st_mtime))
+                except OSError:
+                    pass
+                results.append({"path": p, "ok": True})
+            except Exception as ex:
+                results.append({"path": p, "ok": False, "error": f"{type(ex).__name__}: {ex}"})
+        if job is not None:
+            job["done"] = i + 1
 
     ok = sum(1 for r in results if r["ok"])
-    return {"ok": ok, "failed": [r for r in results if not r["ok"]]}
+    failed = [r for r in results if not r["ok"]]
+    if job is not None:
+        if job.get("status") == "running":
+            job["status"] = "done"
+        if job.get("status") == "cancelled":
+            job["message"] = f"已取消，已处理 {job.get('done', 0)} / {total} 张"
+        else:
+            job["message"] = f"已写入 {ok} 张" + (f"，{len(failed)} 张失败" if failed else "")
+        job["result"] = {"ok": ok, "failed": failed, "backupId": bid}
+    if ok and bid:
+        try:
+            history.add("exif", f"写入 EXIF {ok} 张", backup_id=bid)
+        except Exception:
+            pass
+    return {"ok": ok, "failed": failed, "backupId": bid}

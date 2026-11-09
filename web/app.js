@@ -94,6 +94,7 @@ const S = {
   path: '',
   files: [],
   view: [],
+  truncated: false,
   sel: new Set(),
   anchor: -1,
   thumb: 168,
@@ -106,6 +107,7 @@ const S = {
   meta: null,
   metaPath: '',
   checked: new Set(),
+  editDelete: new Set(),
   settings: {},
   history: [],
   hIdx: -1,
@@ -471,6 +473,10 @@ async function navigate(path, push = true) {
     S.path = d.path;
     S.files = d.files;
     S.dirs = d.dirs || [];
+    S.truncated = !!d.truncated;
+    if (d.truncated) {
+      toast(`文件超过 ${d.limit || 20000} 张，仅显示前 ${d.limit || 20000} 张；建议缩小范围或按子目录浏览`, '', 5200);
+    }
     S.sel.clear();
     S.anchor = -1;
     S.meta = null;
@@ -737,7 +743,19 @@ function renderGrid(reset = false) {
       <div class="name" title="${esc(f.path)}">${esc(label)}</div>`;
     const img = el.querySelector('img');
     img.addEventListener('load', () => { img.classList.add('loaded'); el.querySelector('.ph')?.remove(); });
-    img.addEventListener('error', () => { img.style.display = 'none'; });
+    img.addEventListener('error', () => {
+      // 缩略图生成失败时给一个明确的占位，而不是留一块空白
+      img.style.display = 'none';
+      img.classList.remove('loaded');
+      el.classList.add('thumb-fail');
+      let ph = el.querySelector('.ph');
+      if (!ph) {
+        ph = document.createElement('div');
+        ph.className = 'ph';
+        el.querySelector('.thumb')?.prepend(ph);
+      }
+      if (ph) ph.innerHTML = '<span class="thumb-fail-text">无法预览</span>';
+    });
     // 不直接给 src：交给调度器，按视口优先级决定谁先下载
     el._thumbImg = img;
     el._thumbSrc = apiUrl('/api/thumb', `&path=${encodeURIComponent(f.path)}${bust}`);
@@ -901,6 +919,8 @@ function tabTo(name) {
 
 async function loadMetaForSelection() {
   const paths = Array.from(S.sel);
+  // 换了选中对象，之前标记的「将删除」不再适用
+  S.editDelete.clear();
   if (paths.length === 1) {
     const p = paths[0];
     try {
@@ -954,7 +974,7 @@ function renderInfo() {
   const groups = [
     ['文件', [
       ['文件名', f.name],
-      ['格式', f.kind === 'raw' ? 'RAW（只读）' : 'JPG'],
+      ['格式', f.kind === 'raw' ? 'RAW（只读）' : (f.kind === 'jpg' ? 'JPG' : `${(f.ext || '').replace('.', '').toUpperCase() || '未知'}（只读）`)],
       ['尺寸', f.width ? `${f.width} × ${f.height}` : '—'],
       ...(previewNote ? [['内嵌预览', previewNote]] : []),
       ['大小', fmtSize(f.size)],
@@ -1037,6 +1057,35 @@ const EDIT_GROUPS = [
   },
 ];
 
+function syncEditFieldState(el, k) {
+  if (!el) return;
+  const del = S.editDelete.has(k);
+  el.classList.toggle('del', del);
+  const btn = el.querySelector('.field-clear');
+  if (btn) {
+    btn.classList.toggle('active', del);
+    btn.title = del ? '取消删除' : '删除该字段的已有值';
+    btn.textContent = del ? '↺' : '×';
+  }
+  const note = el.querySelector('.del-note');
+  if (note) note.hidden = !del;
+  if (k === 'GPS') {
+    el.querySelectorAll('[data-gps]').forEach((inp) => { inp.disabled = del; });
+    const pick = el.querySelector('#btnMapPick');
+    if (pick) pick.disabled = del;
+    const clr = el.querySelector('#btnGpsClear');
+    if (clr) clr.disabled = del;
+    const gdel = el.querySelector('#btnGpsDelete');
+    if (gdel) {
+      gdel.textContent = del ? '取消删除' : '删除 GPS';
+      gdel.classList.toggle('active', del);
+    }
+  } else {
+    const inp = el.querySelector(`[data-k="${k}"]`);
+    if (inp) inp.disabled = del;
+  }
+}
+
 function renderEdit() {
   const box = $('#tabEdit');
   const n = S.sel.size;
@@ -1049,7 +1098,7 @@ function renderEdit() {
   /* 选中的全是只读 RAW（没有一张 JPG）时，整块参数锁死：勾选框点不动、输入框 disabled。
      混合选择（RAW + JPG）仍可编辑，写入时 RAW 会被自动跳过。 */
   const locked = jpgCount === 0;
-  if (locked && S.checked.size) S.checked.clear();   // 锁定时不保留任何已勾选项
+  if (locked) { S.checked.clear(); S.editDelete.clear(); }
   const single = n === 1 && S.meta && S.metaPath === Array.from(S.sel)[0];
   const edit = single ? S.meta.edit : {};
 
@@ -1059,13 +1108,19 @@ function renderEdit() {
   } else if (rawCount) {
     html += `<div class="multi-note">已选 ${n} 张，其中 <b>${rawCount}</b> 张是只读 RAW，写入时会自动跳过。</div>`;
   }
+  if (!locked) {
+    html += `<div class="multi-note">${single
+      ? '勾选字段后可改值；<b>留空表示删除该字段</b>，也可以点右侧 × 明确删除。'
+      : '批量修改只写入填了值的字段；要删除字段请点右侧 × 标记「将删除」，避免忘填误删一整批。'}</div>`;
+  }
 
   for (const g of EDIT_GROUPS) {
     html += `<div class="group-title">${g.title}</div>`;
     for (const f of g.fields) {
       const on = !locked && S.checked.has(f.k);
+      const del = !locked && S.editDelete.has(f.k);
       const val = single ? (edit[f.k] ?? '') : '';
-      const dis = locked ? ' disabled' : '';
+      const dis = locked || del ? ' disabled' : '';
       let input = '';
       if (f.type === 'select') {
         input = `<select data-k="${f.k}"${dis}>${f.opts.map(([v, t]) =>
@@ -1078,25 +1133,34 @@ function renderEdit() {
       } else {
         input = `<input type="${f.type}" data-k="${f.k}" step="${f.step || ''}" placeholder="${f.ph || ''}" value="${val === '' || val == null ? '' : esc(val)}"${dis}>`;
       }
-      html += `<div class="field ${on ? 'on' : ''}${locked ? ' locked' : ''}" data-field="${f.k}">
+      html += `<div class="field ${on ? 'on' : ''}${locked ? ' locked' : ''}${del ? ' del' : ''}" data-field="${f.k}">
         <span class="cb"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>
-        <div class="body"><label>${f.label}</label>${input}</div></div>`;
+        <div class="body">
+          <div class="field-head"><label>${f.label}</label>
+            ${locked ? '' : `<button type="button" class="field-clear${del ? ' active' : ''}" data-clear="${f.k}" title="${del ? '取消删除' : '删除该字段的已有值'}">${del ? '↺' : '×'}</button>`}
+          </div>
+          ${input}
+          <div class="del-note"${del ? '' : ' hidden'}>将删除该字段的已有值</div>
+        </div></div>`;
     }
   }
 
+  const gpsDel = !locked && S.editDelete.has('GPS');
   html += `<div class="group-title">位置（GPS）</div>
-    <div class="field ${!locked && S.checked.has('GPS') ? 'on' : ''}${locked ? ' locked' : ''}" data-field="GPS">
+    <div class="field ${!locked && S.checked.has('GPS') ? 'on' : ''}${locked ? ' locked' : ''}${gpsDel ? ' del' : ''}" data-field="GPS">
       <span class="cb"><svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg></span>
       <div class="body">
-        <label>经纬度</label>
+        <div class="field-head"><label>经纬度</label></div>
         <div class="gps-row">
-          <input type="number" step="0.000001" data-gps="lat" placeholder="纬度" value="${single && S.meta.gps.lat != null ? S.meta.gps.lat : ''}"${locked ? ' disabled' : ''}>
-          <input type="number" step="0.000001" data-gps="lng" placeholder="经度" value="${single && S.meta.gps.lng != null ? S.meta.gps.lng : ''}"${locked ? ' disabled' : ''}>
+          <input type="number" step="0.000001" data-gps="lat" placeholder="纬度" value="${single && S.meta.gps.lat != null ? S.meta.gps.lat : ''}"${locked || gpsDel ? ' disabled' : ''}>
+          <input type="number" step="0.000001" data-gps="lng" placeholder="经度" value="${single && S.meta.gps.lng != null ? S.meta.gps.lng : ''}"${locked || gpsDel ? ' disabled' : ''}>
         </div>
         <div class="gps-actions">
-          <button class="btn sm" id="btnMapPick"${locked ? ' disabled' : ''}>地图选点</button>
-          <button class="btn sm ghost" id="btnGpsClear"${locked ? ' disabled' : ''}>清除</button>
+          <button class="btn sm" id="btnMapPick"${locked || gpsDel ? ' disabled' : ''}>地图选点</button>
+          <button class="btn sm ghost" id="btnGpsClear"${locked || gpsDel ? ' disabled' : ''}>清空输入</button>
+          <button class="btn sm ghost${gpsDel ? ' active' : ''}" id="btnGpsDelete"${locked ? ' disabled' : ''}>${gpsDel ? '取消删除' : '删除 GPS'}</button>
         </div>
+        <div class="del-note"${gpsDel ? '' : ' hidden'}>将删除整组 GPS 信息（含海拔）</div>
       </div>
     </div>
     <div class="apply-bar">
@@ -1111,10 +1175,33 @@ function renderEdit() {
     if (locked) { cb.removeAttribute('tabindex'); return; }  // 只读 RAW：勾选框完全不可交互
     cb.onclick = () => {
       const k = el.dataset.field;
-      if (S.checked.has(k)) S.checked.delete(k); else S.checked.add(k);
+      if (S.checked.has(k)) {
+        S.checked.delete(k);
+        S.editDelete.delete(k);
+      } else {
+        S.checked.add(k);
+      }
       el.classList.toggle('on', S.checked.has(k));
+      syncEditFieldState(el, k);
     };
   });
+
+  $$('.field-clear', box).forEach((b) => {
+    b.onclick = (e) => {
+      e.stopPropagation();
+      const k = b.dataset.clear;
+      if (S.editDelete.has(k)) S.editDelete.delete(k); else S.editDelete.add(k);
+      syncEditFieldState(b.closest('.field'), k);
+    };
+  });
+
+  $('#btnGpsDelete').onclick = () => {
+    // 点「删除 GPS」等价于勾上 GPS 并标记删除，避免出现「标记了但没勾选、应用后没反应」
+    S.checked.add('GPS');
+    box.querySelector('[data-field="GPS"]').classList.add('on');
+    if (S.editDelete.has('GPS')) S.editDelete.delete('GPS'); else S.editDelete.add('GPS');
+    syncEditFieldState(box.querySelector('[data-field="GPS"]'), 'GPS');
+  };
 
   $('#btnGpsClear').onclick = () => {
     box.querySelector('[data-gps="lat"]').value = '';
@@ -1124,8 +1211,10 @@ function renderEdit() {
   $('#btnMapPick').onclick = () => openMapPicker((lat, lng) => {
     box.querySelector('[data-gps="lat"]').value = lat.toFixed(6);
     box.querySelector('[data-gps="lng"]').value = lng.toFixed(6);
+    S.editDelete.delete('GPS');
     S.checked.add('GPS');
     box.querySelector('[data-field="GPS"]').classList.add('on');
+    syncEditFieldState(box.querySelector('[data-field="GPS"]'), 'GPS');
   });
 
   $('#btnApply').onclick = applyEdits;
@@ -1135,48 +1224,90 @@ async function applyEdits() {
   const box = $('#tabEdit');
   const paths = Array.from(S.sel);
   const changes = {};
+  const deletes = new Set(S.editDelete);
+  const single = paths.length === 1;
+  let skipped = 0;
   if (!paths.some((p) => !isRaw(p))) { toast('选中的都是只读 RAW，无法写入 EXIF', 'err'); return; }
+
+  const numFields = ['FNumber', 'ExposureTime', 'ISO', 'FocalLength', 'FocalLength35', 'ExposureBias',
+    'WhiteBalance', 'ExposureProgram', 'MeteringMode'];
 
   for (const k of S.checked) {
     if (k === 'GPS') continue;
+    // 已标记「将删除」的字段不再读输入框：输入框里还留着旧值，
+    // 如果继续按值写入，会把刚删掉的字段又写回去。
+    if (S.editDelete.has(k)) { deletes.add(k); continue; }
     const el = box.querySelector(`[data-k="${k}"]`);
     if (!el) continue;
-    let v = el.value;
-    if (v === '' || v == null) continue;
-    const numFields = ['FNumber', 'ExposureTime', 'ISO', 'FocalLength', 'FocalLength35', 'ExposureBias',
-      'WhiteBalance', 'ExposureProgram', 'MeteringMode'];
+    const v = el.value;
+    if (v === '' || v == null) {
+      // 单张：留空即删除；多张：只有点过 × 才删除，避免忘填把一整批字段删掉
+      if (single) deletes.add(k);
+      else if (!S.editDelete.has(k)) skipped++;
+      continue;
+    }
     changes[k] = numFields.includes(k) ? Number(v) : v;
   }
 
   if (S.checked.has('GPS')) {
-    const lat = parseFloat(box.querySelector('[data-gps="lat"]').value);
-    const lng = parseFloat(box.querySelector('[data-gps="lng"]').value);
-    if (Number.isNaN(lat) || Number.isNaN(lng)) {
-      toast('请填写有效的经纬度，或点击「地图选点」', 'err');
-      return;
+    if (S.editDelete.has('GPS')) {
+      deletes.add('GPS');
+    } else {
+      const latEl = box.querySelector('[data-gps="lat"]');
+      const lngEl = box.querySelector('[data-gps="lng"]');
+      const latV = (latEl.value || '').trim();
+      const lngV = (lngEl.value || '').trim();
+      if (!latV && !lngV) {
+        if (single) deletes.add('GPS');
+        else skipped++;
+      } else if (!latV || !lngV) {
+        toast('经纬度要同时填写，或点「删除 GPS」', 'err');
+        return;
+      } else {
+        const lat = parseFloat(latV);
+        const lng = parseFloat(lngV);
+        if (Number.isNaN(lat) || Number.isNaN(lng)) {
+          toast('请填写有效的经纬度，或点击「地图选点」', 'err');
+          return;
+        }
+        if (Math.abs(lat) > 90 || Math.abs(lng) > 180) { toast('经纬度超出范围', 'err'); return; }
+        changes.GPSLat = lat;
+        changes.GPSLng = lng;
+      }
     }
-    if (Math.abs(lat) > 90 || Math.abs(lng) > 180) { toast('经纬度超出范围', 'err'); return; }
-    changes.GPSLat = lat;
-    changes.GPSLng = lng;
   }
 
-  if (!Object.keys(changes).length) { toast('请先勾选要修改的字段', 'err'); return; }
+  if (!Object.keys(changes).length && !deletes.size) {
+    toast(skipped ? '勾选的字段没有填值；要删除请点字段右侧的 ×' : '请先勾选要修改的字段', 'err');
+    return;
+  }
 
   const btn = $('#btnApply');
   btn.disabled = true;
-  btn.textContent = '写入中…';
+  btn.textContent = '准备写入…';
   try {
-    const r = await api('/api/write', { method: 'POST', body: JSON.stringify({ paths, changes }) });
-    if (r.ok) toast(`已写入 ${r.ok} 个文件${r.failed.length ? `，${r.failed.length} 个失败` : ''}`, 'ok');
-    if (r.failed.length) {
-      console.warn(r.failed);
-      toast(`失败：${r.failed[0].error}`, 'err', 5000);
-    }
-    for (const p of paths) S.cacheBust[p] = `&v=${Date.now()}`;
-    S.checked.clear();
-    renderGrid(true);
-    await loadMetaForSelection();
-    tabTo('info');
+    const job = await api('/api/write', {
+      method: 'POST',
+      body: JSON.stringify({ paths, changes, deletes: Array.from(deletes) }),
+    });
+    btn.textContent = '写入中…';
+    runJob(job.id, '正在写入 EXIF', async (j) => {
+      if (j.status === 'error') {
+        toast(j.message || '写入失败', 'err', 6000);
+      } else if (j.status === 'cancelled') {
+        toast(`已取消，已处理 ${j.done} / ${j.total} 张`, '', 4200);
+      } else {
+        const r = j.result || {};
+        toast(`已写入 ${r.ok ?? 0} 个文件${r.failed?.length ? `，${r.failed.length} 个失败` : ''}`, 'ok');
+        if (r.failed?.length) toast(`失败：${r.failed[0].error}`, 'err', 5000);
+      }
+      for (const p of paths) S.cacheBust[p] = `&v=${Date.now()}`;
+      S.checked.clear();
+      S.editDelete.clear();
+      renderGrid(true);
+      await loadMetaForSelection();
+      tabTo('info');
+    });
   } catch (e) {
     toast(e.message, 'err', 5000);
   } finally {
@@ -1200,7 +1331,7 @@ function updateStatus() {
   const dirs = S.recursive ? 0 : (S.dirs || []).filter((d) => !q || d.name.toLowerCase().includes(q)).length;
   const n = S.photoCount ?? S.files.length;
   $('#stCount').textContent = S.path
-    ? `${n} 张照片${S.recursive ? '（含子目录）' : ''}${dirs ? ` · ${dirs} 个文件夹` : ''}`
+    ? `${n} 张照片${S.recursive ? '（含子目录）' : ''}${S.truncated ? '（已截断）' : ''}${dirs ? ` · ${dirs} 个文件夹` : ''}`
     : '未打开文件夹';
   $('#stSel').textContent = S.sel.size ? `已选 ${S.sel.size} 张` : '未选择';
   $('#stPath').textContent = S.path || '';
@@ -1549,21 +1680,34 @@ function openRename() {
   $('#rnApply').onclick = async () => {
     const btn = $('#rnApply');
     btn.disabled = true;
-    btn.textContent = '处理中…';
+    btn.textContent = '准备中…';
     try {
       const job = await api('/api/rename/apply', { method: 'POST', body: JSON.stringify({ items }) });
       closeModal();
-      const n = job.result?.renamed ?? 0;
-      toast(`已重命名 ${n} 个文件`, 'ok', 8000, n ? {
-        label: '撤销',
-        fn: async () => {
-          const r = await api('/api/rename/undo', { method: 'POST', body: '{}' }).catch((e) => { toast(e.message, 'err'); return null; });
-          if (!r) return;
-          toast(`已撤销 ${r.ok} 个重命名`, 'ok');
-          await navigate(S.path, false);
-        },
-      } : null);
-      await navigate(S.path, false);
+      runJob(job.id, '正在重命名', async (j) => {
+        const n = j.result?.renamed ?? 0;
+        const hid = j.result?.historyId || '';
+        const undoAction = (n > 0 && hid) ? {
+          label: '撤销',
+          fn: async () => {
+            const r = await api('/api/rename/undo', { method: 'POST', body: JSON.stringify({ id: hid }) })
+              .catch((e) => { toast(e.message, 'err'); return null; });
+            if (!r) return;
+            toast(`已撤销 ${r.ok} 个重命名${r.failed?.length ? `，${r.failed.length} 个失败` : ''}`,
+              r.failed?.length ? 'err' : 'ok');
+            await navigate(S.path, false);
+          },
+        } : null;
+        if (j.status === 'error') {
+          toast(j.message || '重命名失败', 'err', 6000);
+        } else if (j.status === 'cancelled') {
+          toast(`已取消，已处理 ${j.done} / ${j.total} 张${n ? `，已改名的 ${n} 个可撤销` : ''}`, '', 6000, undoAction);
+        } else {
+          toast(`已重命名 ${n} 个文件${j.errors?.length ? `，${j.errors.length} 个失败` : ''}`,
+            j.errors?.length ? 'err' : 'ok', 8000, undoAction);
+        }
+        await navigate(S.path, false);
+      });
     } catch (e) {
       toast(e.message, 'err', 5000);
       btn.disabled = false;
@@ -1574,41 +1718,44 @@ function openRename() {
 
 /* ============================================================ job */
 function runJob(jobId, title, onDone) {
+  let timer = null;
+  let closed = false;
   modal({
     title,
     body: `<div class="progress"><div id="jobBar" style="width:0"></div></div>
            <div class="hint mt" id="jobMsg">准备中…</div>`,
     foot: `<div class="tool-spacer"></div><button class="btn ghost" id="jobCancel">取消</button>`,
+    // 用户点空白处关掉进度框时，后台任务继续；轮询不停，完成后仍会刷新界面
+    onClose: () => { closed = true; },
   });
 
   const bar = $('#jobBar');
   const msg = $('#jobMsg');
-  let timer = null;
-  let stopping = false;
 
   const poll = async () => {
     try {
       const j = await api('/api/job?id=' + encodeURIComponent(jobId));
       const pct = j.total ? Math.round((j.done / j.total) * 100) : 100;
-      bar.style.width = `${pct}%`;
-      msg.textContent = `${j.done} / ${j.total} · ${pct}%`;
+      if (bar && bar.isConnected) bar.style.width = `${pct}%`;
+      if (msg && msg.isConnected) msg.textContent = `已处理 ${j.done} / ${j.total} 张 · ${pct}%`;
       if (j.status !== 'running') {
         clearInterval(timer);
-        if (!stopping) closeModal();
+        if (!closed) closeModal();
         onDone(j);
       }
     } catch (e) {
       clearInterval(timer);
-      if (!stopping) { closeModal(); toast(e.message, 'err'); }
+      if (!closed) closeModal();
+      toast(e.message, 'err');
     }
   };
 
   $('#jobCancel').onclick = async () => {
-    stopping = true;
-    clearInterval(timer);
+    const b = $('#jobCancel');
+    if (b) { b.disabled = true; b.textContent = '正在取消…'; }
+    if (msg && msg.isConnected) msg.textContent = '正在取消，当前这张处理完后停止…';
     await api('/api/job/cancel', { method: 'POST', body: JSON.stringify({ id: jobId }) }).catch(() => {});
-    closeModal();
-    toast('已取消', '', 2000);
+    // 不立刻关窗：等轮询看到 cancelled / done 再关，避免界面说取消了但后台还在写
   };
 
   timer = setInterval(poll, 260);
@@ -1776,14 +1923,32 @@ function openSettings() {
         </div>`}
         <div class="group-title">缩略图缓存</div>
         <div class="form-row">
-          <div class="hint">缩略图会缓存在本机，加快二次打开速度。删除后首次浏览会重新生成。</div>
+          <div class="hint">缩略图会缓存在本机，加快二次打开速度。超过上限时自动清理最久未用的缓存（缓存可再生，不影响原图）。</div>
+          <div class="hint tight" id="cacheStat">—</div>
           <div class="inline-row mt">
             <button class="btn" id="btnClearCache">清理缓存</button>
           </div>
         </div>
         <div class="group-title">EXIF 备份</div>
         <div class="hint tight">每次写入前都会自动备份原始 EXIF，可随时回滚。</div>
+        <div class="hint tight" id="bkStat">—</div>
         <div id="bkList" class="dir-list short"></div>
+        <div class="inline-row mt">
+          <button class="btn ghost" id="btnPruneBk">清理旧备份（保留最近 20 份）</button>
+        </div>
+        <div class="form-row mt">
+          <label class="check-row">
+            <input type="checkbox" id="stBackupAuto" ${s.backup_auto_limit ? 'checked' : ''}>
+            超过上限时自动清理最旧备份
+          </label>
+          <div class="inline-row">
+            <input type="number" id="stBackupMax" min="20" step="10" value="${s.backup_max_mb || 500}">
+            <span class="hint">MB，至少保留 5 份</span>
+          </div>
+        </div>
+        <div class="group-title">操作历史</div>
+        <div class="hint tight">撤销记录保存在本机，重启软件后仍然可用。最多保留最近 50 次重命名。</div>
+        <div id="histList" class="dir-list short"></div>
       </div>
       <div id="stExifTool" hidden>
         <div class="group-title">当前状态</div>
@@ -1830,7 +1995,7 @@ function openSettings() {
       </div>
       <div id="stAbout" hidden>
         <div class="group-title">ExifCraft</div>
-        <div class="kv"><span class="k">版本</span><span class="v">2.2.1</span></div>
+        <div class="kv"><span class="k">版本</span><span class="v">2.3.0</span></div>
         <div class="kv"><span class="k">支持</span><span class="v">JPG 读写 EXIF · RAW（含 CR3）只读</span></div>
         <div class="kv"><span class="k">ExifTool</span><span class="v small">${S.etAvailable ? '已调用 v' + esc(S.et.version || '') + '（仅用于读取 CR3）' : '未调用（可选）'}</span></div>
         <div class="kv"><span class="k">配置</span><span class="v small">${esc(CONFIG_DIR_LABEL)}</span></div>
@@ -1870,10 +2035,34 @@ function openSettings() {
 
   $('#btnClearCache').onclick = async () => {
     const r = await api('/api/cache/clear', { method: 'POST', body: '{}' });
-    toast(`已清理 ${r.removed} 个缓存文件，释放 ${fmtSize(r.bytes)}`, 'ok');
+    toast(`已清理 ${r.removed} 个缓存文件，释放 ${fmtSize(r.freed || 0)}`, 'ok');
+    loadCacheStat();
   };
 
   loadBackups();
+  loadCacheStat();
+  loadHistory();
+
+  let pruneArmed = false;
+  $('#btnPruneBk').onclick = async () => {
+    const b = $('#btnPruneBk');
+    if (!pruneArmed) {
+      pruneArmed = true;
+      b.textContent = '再点一次确认清理（保留最近 20 份）';
+      setTimeout(() => {
+        pruneArmed = false;
+        if (b.isConnected) b.textContent = '清理旧备份（保留最近 20 份）';
+      }, 4000);
+      return;
+    }
+    pruneArmed = false;
+    const r = await api('/api/backups/prune', { method: 'POST', body: JSON.stringify({ keep: 20 }) })
+      .catch((e) => { toast(e.message, 'err'); return null; });
+    if (!r) return;
+    toast(`已清理 ${r.removed} 份旧备份，释放 ${fmtSize(r.freed || 0)}`, 'ok');
+    b.textContent = '清理旧备份（保留最近 20 份）';
+    loadBackups();
+  };
 
   const syncEtStatus = () => {
     const el = $('#stEtStatus');
@@ -1947,6 +2136,7 @@ function openSettings() {
   };
 
   $('#btnSaveSettings').onclick = async () => {
+    const maxMb = Math.max(20, parseInt($('#stBackupMax').value || '500', 10) || 500);
     S.settings = await api('/api/settings', {
       method: 'POST',
       body: JSON.stringify({
@@ -1955,6 +2145,8 @@ function openSettings() {
         theme: document.documentElement.dataset.theme,
         native_frame: !!($('#stNativeFrame') && $('#stNativeFrame').checked),
         exiftool_path: $('#stEtPath').value.trim(),
+        backup_auto_limit: !!($('#stBackupAuto') && $('#stBackupAuto').checked),
+        backup_max_mb: maxMb,
       }),
     });
     await refreshExiftool();
@@ -1985,21 +2177,77 @@ async function loadBackups() {
   const box = $('#bkList');
   if (!box) return;
   try {
-    const { items } = await api('/api/backups');
+    const { items, stats } = await api('/api/backups');
+    const st = $('#bkStat');
+    if (st) st.textContent = stats ? `共 ${stats.count} 份，占用 ${fmtSize(stats.bytes)}` : '';
     if (!items.length) { box.innerHTML = '<div class="dir-row muted">暂无备份</div>'; return; }
     box.innerHTML = items.map((b) => `
       <div class="dir-row">
         <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
-        <span class="grow">${new Date(b.time * 1000).toLocaleString('zh-CN')} · ${b.count} 个文件</span>
+        <span class="grow">${new Date(b.time * 1000).toLocaleString('zh-CN')} · ${b.count} 个文件 · ${fmtSize(b.size || 0)}</span>
         <button class="btn sm" data-bk="${esc(b.id)}">回滚</button>
       </div>`).join('');
     $$('[data-bk]', box).forEach((btn) => {
       btn.onclick = async () => {
-        if (!confirm('确定把该批文件恢复到写入前的 EXIF 状态？')) return;
-        const r = await api('/api/restore', { method: 'POST', body: JSON.stringify({ id: btn.dataset.bk }) });
+        const r = await api('/api/restore', { method: 'POST', body: JSON.stringify({ id: btn.dataset.bk }) })
+          .catch((e) => { toast(e.message, 'err'); return null; });
+        if (!r) return;
         toast(`已恢复 ${r.ok} 个文件${r.failed.length ? `，${r.failed.length} 个失败` : ''}`, r.failed.length ? 'err' : 'ok');
         for (const p of S.sel) S.cacheBust[p] = `&v=${Date.now()}`;
         renderGrid(true);
+        loadBackups();
+        loadHistory();
+      };
+    });
+  } catch (e) { box.innerHTML = `<div class="dir-row err">${esc(e.message)}</div>`; }
+}
+
+async function loadCacheStat() {
+  const el = $('#cacheStat');
+  if (!el) return;
+  try {
+    const c = await api('/api/cache');
+    el.textContent = `当前 ${c.count} 个文件，占用 ${fmtSize(c.bytes)}`;
+  } catch (e) { el.textContent = '—'; }
+}
+
+async function loadHistory() {
+  const box = $('#histList');
+  if (!box) return;
+  try {
+    const { items } = await api('/api/history');
+    const usable = items.filter((i) => !i.undone &&
+      ((i.kind === 'rename' && i.undo?.length) || (i.kind === 'exif' && i.backupId)));
+    if (!usable.length) { box.innerHTML = '<div class="dir-row muted">暂无操作记录</div>'; return; }
+    box.innerHTML = usable.slice(0, 20).map((i) => `
+      <div class="dir-row">
+        <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+        <span class="grow">${new Date(i.time * 1000).toLocaleString('zh-CN')} · ${esc(i.summary)}</span>
+        <button class="btn sm" data-hist="${esc(i.id)}" data-kind="${esc(i.kind)}">${i.kind === 'rename' ? '撤销' : '回滚'}</button>
+      </div>`).join('');
+    $$('[data-hist]', box).forEach((b) => {
+      b.onclick = async () => {
+        const id = b.dataset.hist;
+        const item = items.find((x) => x.id === id);
+        if (!item) return;
+        if (item.kind === 'rename') {
+          const r = await api('/api/rename/undo', { method: 'POST', body: JSON.stringify({ id }) })
+            .catch((e) => { toast(e.message, 'err'); return null; });
+          if (!r) return;
+          toast(`已撤销 ${r.ok} 个重命名${r.failed?.length ? `，${r.failed.length} 个失败` : ''}`,
+            r.failed?.length ? 'err' : 'ok');
+          await navigate(S.path, false);
+        } else {
+          const r = await api('/api/restore', { method: 'POST', body: JSON.stringify({ id: item.backupId }) })
+            .catch((e) => { toast(e.message, 'err'); return null; });
+          if (!r) return;
+          toast(`已恢复 ${r.ok} 个文件${r.failed?.length ? `，${r.failed.length} 个失败` : ''}`,
+            r.failed?.length ? 'err' : 'ok');
+          for (const p of S.sel) S.cacheBust[p] = `&v=${Date.now()}`;
+          renderGrid(true);
+        }
+        loadHistory();
+        loadBackups();
       };
     });
   } catch (e) { box.innerHTML = `<div class="dir-row err">${esc(e.message)}</div>`; }

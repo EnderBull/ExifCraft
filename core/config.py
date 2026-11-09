@@ -72,6 +72,11 @@ DEFAULTS = {
     "sidebar_width": 248,
     "inspector_width": 320,
     "exiftool_path": "",
+    # 缩略图缓存上限（MB）。超过后按最久未用自动清理，缓存可再生。
+    "cache_max_mb": 512,
+    # EXIF 备份策略：默认不自动删；打开后超过上限时清理最旧的备份。
+    "backup_auto_limit": False,
+    "backup_max_mb": 500,
 }
 
 

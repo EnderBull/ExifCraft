@@ -26,6 +26,11 @@ ALL_EXT = JPG_EXT | RAW_EXT
 
 THUMB_MAX = 512
 PREVIEW_MAX = 2560
+# 递归扫描上限：超过后截断并在界面提示，避免整盘扫描卡死
+RECURSIVE_MAX_FILES = 20000
+RECURSIVE_MAX_DEPTH = 8
+# 目录树上的照片数量角标，超过这个数只显示 9999+
+COUNT_LIMIT = 9999
 
 _SEM = threading.Semaphore(max(4, min(12, (os.cpu_count() or 4))))
 
@@ -191,6 +196,52 @@ def clear_cache() -> tuple[int, int]:
     return n, total
 
 
+def cache_stats() -> dict:
+    """缩略图缓存占用（份数 / 字节）。"""
+    count = 0
+    total = 0
+    for p in config.cache_dir().rglob("*.jpg"):
+        try:
+            total += p.stat().st_size
+            count += 1
+        except OSError:
+            pass
+    return {"count": count, "bytes": total}
+
+
+def prune_cache(max_bytes: int | None = None) -> dict:
+    """缓存超过上限时按最久未用清理到 90%。缓存可再生，删了不影响原图。"""
+    if max_bytes is None:
+        try:
+            max_bytes = max(32, int(config.load().get("cache_max_mb") or 512)) * 1024 * 1024
+        except (TypeError, ValueError):
+            max_bytes = 512 * 1024 * 1024
+    stats = cache_stats()
+    if stats["bytes"] <= max_bytes:
+        return {"removed": 0, "bytes": 0, **stats}
+
+    files = []
+    for p in config.cache_dir().rglob("*.jpg"):
+        try:
+            st = p.stat()
+            files.append((st.st_mtime, st.st_size, p))
+        except OSError:
+            pass
+    files.sort(key=lambda x: x[0])          # 最久未用的先删
+    removed = 0
+    freed = 0
+    for _mtime, size, p in files:
+        if stats["bytes"] - freed <= int(max_bytes * 0.9):
+            break
+        try:
+            p.unlink()
+            freed += size
+            removed += 1
+        except OSError:
+            pass
+    return {"removed": removed, "freed": freed, **cache_stats()}
+
+
 # ---------------------------------------------------------------- 目录扫描
 
 def _win_roots() -> list[dict]:
@@ -252,12 +303,12 @@ def roots() -> list[dict]:
     return _drive_roots()
 
 
-def _count_photos(dir_path: str, limit: int = 20000) -> int:
+def _count_photos(dir_path: str, limit: int = COUNT_LIMIT) -> int:
     n = 0
     try:
         with os.scandir(dir_path) as it:
-            for i, e in enumerate(it):
-                if i > limit:
+            for e in it:
+                if n >= limit:
                     break
                 try:
                     if e.is_file() and os.path.splitext(e.name)[1].lower() in ALL_EXT:
@@ -279,8 +330,9 @@ def _safe_stat(p: str) -> os.stat_result | None:
 SKIP_DIRS = {"$RECYCLE.BIN", "System Volume Information", "node_modules", ".git", "__pycache__"}
 
 
-def _walk_photos(root: str, max_files: int = 20000, max_depth: int = 8) -> list[dict]:
-    """递归收集照片，返回带相对路径的记录。"""
+def _walk_photos(root: str, max_files: int = RECURSIVE_MAX_FILES,
+                 max_depth: int = RECURSIVE_MAX_DEPTH) -> tuple[list[dict], bool]:
+    """递归收集照片，返回 (记录, 是否因上限被截断)。"""
     out: list[dict] = []
     base_len = len(root.rstrip("\\/")) + 1  # 分隔符只在根末尾丢一个
     stack = [(root, 0)]
@@ -315,7 +367,7 @@ def _walk_photos(root: str, max_files: int = 20000, max_depth: int = 8) -> list[
             continue
         if truncated:
             break
-    return out
+    return out, truncated
 
 
 def list_dir(path: str, sort: str = "name", want_counts: bool = True, recursive: bool = False) -> dict:
@@ -351,10 +403,13 @@ def list_dir(path: str, sort: str = "name", want_counts: bool = True, recursive:
         except OSError:
             continue
 
+    truncated = False
     if recursive:
-        files = _walk_photos(path)
+        files, truncated = _walk_photos(path)
 
-    if want_counts:
+    # 递归模式不再为每个子文件夹统计照片数：结果已被铺平，角标用不上，
+    # 重复统计只会让大目录 / 网络盘更慢。
+    if want_counts and not recursive:
         with ThreadPoolExecutor(max_workers=8) as ex:
             counts = list(ex.map(lambda d: _count_photos(d.path), subdirs))
     else:
@@ -388,4 +443,6 @@ def list_dir(path: str, sort: str = "name", want_counts: bool = True, recursive:
         "files": files,
         "total_photos": len(files),
         "recursive": recursive,
+        "truncated": truncated,
+        "limit": RECURSIVE_MAX_FILES if recursive else 0,
     }

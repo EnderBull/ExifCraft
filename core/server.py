@@ -13,7 +13,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from . import config, exifio, exiftool, media, ops
+from . import config, exifio, exiftool, history, media, ops
 
 if getattr(sys, "frozen", False):
     WEB_DIR = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "web"
@@ -25,7 +25,6 @@ PLATFORM = "mac" if config.is_mac() else "win"
 CONFIG_DIR_TEXT = ("~/Library/Application Support/ExifCraft" if PLATFORM == "mac"
                    else "%LOCALAPPDATA%\\ExifCraft")
 TOKEN = secrets.token_urlsafe(24)
-LAST_RENAME: dict = {"undo": []}
 
 mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("text/css", ".css")
@@ -42,6 +41,14 @@ def reveal(target: str) -> None:
         subprocess.Popen(["explorer", "/select,", target])  # noqa: S603,S607
     else:
         os.startfile(target)  # noqa: S606
+
+
+def _clamp_int(value, default: int, low: int, high: int) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        n = default
+    return max(low, min(high, n))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -144,7 +151,11 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/exiftool":
                 return self._json(exiftool.status())
             if path == "/api/backups":
-                return self._json({"items": exifio.list_backups()})
+                return self._json({"items": exifio.list_backups(), "stats": exifio.backup_stats()})
+            if path == "/api/history":
+                return self._json({"items": history.list_items()})
+            if path == "/api/cache":
+                return self._json(media.cache_stats())
             if path == "/api/job":
                 jid = (query.get("id") or [""])[0]
                 j = ops.get_job(jid)
@@ -174,13 +185,27 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/write":
                 paths = data.get("paths") or []
                 changes = data.get("changes") or {}
-                if not paths or not changes:
+                deletes = data.get("deletes") or []
+                if not paths or (not changes and not deletes):
                     return self._err("缺少参数")
-                return self._json(exifio.write_meta(paths, changes))
+                job = ops.new_job("write", len(paths))
+                threading.Thread(
+                    target=exifio.write_meta,
+                    args=(paths, changes, deletes),
+                    kwargs={"job": job},
+                    daemon=True,
+                ).start()
+                return self._json(ops.get_job(job["id"]))
 
             if path == "/api/restore":
                 bid = data.get("id") or ""
-                return self._json(exifio.restore_backup(bid))
+                res = exifio.restore_backup(bid)
+                if res.get("ok"):
+                    for it in history.list_items(200):
+                        if it.get("kind") == "exif" and it.get("backupId") == bid and not it.get("undone"):
+                            history.mark_undone(it["id"])
+                            break
+                return self._json(res)
 
             if path == "/api/rename/preview":
                 paths = data.get("paths") or []
@@ -190,24 +215,26 @@ class Handler(BaseHTTPRequestHandler):
 
             if path == "/api/rename/apply":
                 items = data.get("items") or []
-                job = ops.rename_apply(items)
-                LAST_RENAME["undo"] = (job.get("result") or {}).get("undo") or []
-                return self._json(job)
+                if not items:
+                    return self._err("缺少参数")
+                job = ops.new_job("rename", len(items))
+                threading.Thread(
+                    target=ops.rename_apply,
+                    args=(items,),
+                    kwargs={"job": job},
+                    daemon=True,
+                ).start()
+                return self._json(ops.get_job(job["id"]))
 
             if path == "/api/rename/undo":
-                pairs = LAST_RENAME.get("undo") or []
-                if not pairs:
+                item_id = data.get("id") or ""
+                item = history.get(item_id) if item_id else history.latest("rename")
+                if not item or item.get("kind") != "rename" or item.get("undone"):
                     return self._err("没有可撤销的重命名")
-                ok, failed = 0, []
-                for p in reversed(pairs):
-                    try:
-                        if os.path.exists(p["from"]) and not os.path.exists(p["to"]):
-                            os.rename(p["from"], p["to"])
-                            ok += 1
-                    except OSError as e:
-                        failed.append({"path": p["from"], "error": str(e)})
-                LAST_RENAME["undo"] = []
-                return self._json({"ok": ok, "failed": failed})
+                res = ops.rename_undo(item.get("undo") or [])
+                if res["ok"]:
+                    history.mark_undone(item["id"])
+                return self._json({**res, "id": item["id"]})
 
             if path == "/api/export":
                 paths = data.get("paths") or []
@@ -218,8 +245,8 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(
                     target=ops.export_images,
                     args=(paths, out_dir,
-                          int(data.get("longEdge") or 3840),
-                          int(data.get("quality") or 85)),
+                          _clamp_int(data.get("longEdge"), 3840, 320, 12000),
+                          _clamp_int(data.get("quality"), 85, 40, 100)),
                     kwargs={"keep": data.get("keep") or {}, "job": job},
                     daemon=True,
                 ).start()
@@ -243,7 +270,11 @@ class Handler(BaseHTTPRequestHandler):
 
             if path == "/api/cache/clear":
                 n, total = media.clear_cache()
-                return self._json({"removed": n, "bytes": total})
+                return self._json({"removed": n, "freed": total, **media.cache_stats()})
+
+            if path == "/api/backups/prune":
+                keep = _clamp_int(data.get("keep"), 20, 1, 500)
+                return self._json(exifio.prune_backups(keep))
 
             if path == "/api/open-external":
                 url = data.get("url") or ""
@@ -308,6 +339,8 @@ class Server:
     def start(self):
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
+        # 缓存超过配置上限时按最久未用清理；后台做，不阻塞启动
+        threading.Thread(target=media.prune_cache, daemon=True).start()
 
     def stop(self):
         self.httpd.shutdown()
