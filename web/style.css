@@ -1194,7 +1194,8 @@ input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 7px co
   flex: none;
 }
 .copy-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 15px 92px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
   min-height: 30px;
@@ -1207,18 +1208,21 @@ input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 7px co
 .copy-row:hover { background: color-mix(in oklab, currentColor 6%, transparent); }
 .copy-row.dis { opacity: .45; cursor: default; }
 .copy-row input { width: 15px; height: 15px; accent-color: var(--md-primary); flex: none; }
-.copy-name { flex: none; width: 76px; color: var(--md-on-surface-variant); font-size: 12.5px; }
+.copy-name { color: var(--md-on-surface-variant); font-size: 12.5px; white-space: nowrap; }
 .copy-val {
-  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  text-align: right;
+  text-align: left;
   font-size: 12px;
   color: var(--md-on-surface);
   font-variant-numeric: tabular-nums;
 }
+/* 导入窗口更窄：参数名后紧跟数值，不再固定 92px 标签列 */
+.modal.narrow .copy-row { display: flex; gap: 8px; }
+.modal.narrow .copy-name { flex: none; width: auto; }
+.modal.narrow .copy-val { flex: 1; }
 
 /* 拖入照片时右栏的虚线高亮 */
 #inspector.drop-active::after {
@@ -1260,6 +1264,7 @@ input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 7px co
 }
 @keyframes pop { from { opacity: 0; transform: scale(.92); } }
 .modal.wide { width: min(880px, calc(100vw - 48px)); }
+.modal.narrow { width: min(520px, calc(100vw - 48px)); }
 .modal.xwide { width: min(1060px, calc(100vw - 48px)); }
 
 .modal-head {

@@ -1451,7 +1451,7 @@ async function openCopyMenu() {
   const rect = $('#btnCopyExif').getBoundingClientRect();
   const iw = $('#inspector').getBoundingClientRect().width;
   const width = Math.max(220, Math.min(300, iw - 16));
-  const maxH = Math.min(430, window.innerHeight - 80);
+  const maxH = Math.min(700, window.innerHeight - 80);
   pop.style.width = `${width}px`;
   pop.style.maxHeight = `${maxH}px`;
   // 菜单贴右栏右边，避免向左盖住缩略图网格
@@ -1658,7 +1658,7 @@ function openImportDialog(meta, name) {
 
   const m = modal({
     title: `从「${name}」导入 EXIF`,
-    size: 'wide',
+    size: 'narrow',
     body,
     foot: `<div class="tool-spacer"></div>
            <button class="btn ghost" id="importCancel">取消</button>
@@ -2382,7 +2382,7 @@ function openSettings() {
       </div>
       <div id="stAbout" hidden>
         <div class="group-title">ExifCraft</div>
-        <div class="kv"><span class="k">版本</span><span class="v">2.4.0</span></div>
+        <div class="kv"><span class="k">版本</span><span class="v">2.4.1</span></div>
         <div class="kv"><span class="k">支持</span><span class="v">JPG 读写 EXIF · RAW（含 CR3）只读</span></div>
         <div class="kv"><span class="k">ExifTool</span><span class="v small">${S.etAvailable ? '已调用 v' + esc(S.et.version || '') + '（仅用于读取 CR3）' : '未调用（可选）'}</span></div>
         <div class="kv"><span class="k">配置</span><span class="v small">${esc(CONFIG_DIR_LABEL)}</span></div>
