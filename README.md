@@ -11,7 +11,7 @@
 [![Release](https://img.shields.io/github/v/release/EnderBull/ExifCraft?color=4d7cfe&label=release)](../../releases/latest)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-4d7cfe)](../../releases/latest)
 [![License](https://img.shields.io/github/license/EnderBull/ExifCraft?color=4d7cfe)](LICENSE)
-[![Size](https://img.shields.io/badge/portable-18.1%20MB-4d7cfe)](../../releases/latest)
+[![Size](https://img.shields.io/badge/portable-18.2%20MB-4d7cfe)](../../releases/latest)
 
 [下载](#下载) · [功能](#能做什么) · [截图](#截图) · [从源码运行](#从源码运行) · [路线图](#路线图)
 
