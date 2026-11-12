@@ -32,13 +32,13 @@
 
 到 [Releases](../../releases/latest) 页面下载：
 
-> 最新版 **v2.4.1**（2026-11-09）。
+> 最新版 **v2.5.1**（2026-11-12）。
 
 | 平台 | 文件 | 说明 |
 |---|---|---|
-| Windows 10/11 x64 | `ExifCraft-v2.4.1-win64-portable.zip`（18.2 MB） | 绿色版，解压即用，无需安装 |
-| macOS 11+ · Apple Silicon | `ExifCraft-2.4.1-macOS-arm64.dmg`（17.3 MB） | 拖进「应用程序」即可；**未签名，首次打开见下** |
-| macOS 备用 | `ExifCraft-2.4.1-macOS-arm64.zip`（16.3 MB） | 解压得到 `ExifCraft.app`，与 dmg 内容相同 |
+| Windows 10/11 x64 | `ExifCraft-v2.5.1-win64-portable.zip`（18.2 MB） | 绿色版，解压即用，无需安装 |
+| macOS 11+ · Apple Silicon | `ExifCraft-2.5.1-macOS-arm64.dmg`（17.3 MB） | 拖进「应用程序」即可；**未签名，首次打开见下** |
+| macOS 备用 | `ExifCraft-2.5.1-macOS-arm64.zip`（16.3 MB） | 解压得到 `ExifCraft.app`，与 dmg 内容相同 |
 
 **Windows**：解压后双击 `ExifCraft.exe`。首次启动会自动创建配置目录 `%LOCALAPPDATA%\ExifCraft`：
 
