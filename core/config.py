@@ -61,8 +61,11 @@ def config_path() -> Path:
 
 
 DEFAULTS = {
+    # 地图选点：amap（国内） / google（海外）；两套 Key 各自保存，切换不丢
+    "map_provider": "amap",
     "amap_key": "",
     "amap_secret": "",
+    "google_key": "",
     "theme": "dark",
     "thumb_size": 168,
     "sort": "name",

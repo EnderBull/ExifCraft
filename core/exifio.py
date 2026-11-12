@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import math
 import os
 import time
 import uuid
@@ -103,13 +104,21 @@ def _shutter_fraction(v: float) -> Fraction | None:
         return None
 
 
+def _fmt_seconds(v: float) -> str:
+    """秒数转文本。%g 在大数时会写成 1e+06，这里统一成普通数字。"""
+    if float(v).is_integer():
+        return str(int(v))
+    s = f"{v:.6f}".rstrip("0").rstrip(".")
+    return s or "0"
+
+
 def _fmt_shutter(v: float) -> str:
     if v <= 0:
         return ""
     fr = _shutter_fraction(v)
     if fr and fr.numerator == 1:
         return f"1/{fr.denominator} s"
-    return f"{v:g} s"
+    return f"{_fmt_seconds(v)} s"
 
 
 def _shutter_input(v: float) -> str:
@@ -119,7 +128,7 @@ def _shutter_input(v: float) -> str:
     fr = _shutter_fraction(v)
     if fr and fr.numerator == 1:
         return f"1/{fr.denominator}"
-    return f"{v:g}"
+    return _fmt_seconds(v)
 
 
 def _parse_shutter(text) -> float:
@@ -138,8 +147,11 @@ def _parse_shutter(text) -> float:
         raise ValueError("快门分母不能为 0")
     except (TypeError, ValueError):
         raise ValueError("快门格式应为 1/160 或小数秒")
-    if not (0 < v <= 3600):
-        raise ValueError("快门速度需大于 0 且不超过 3600 秒")
+    if not (v > 0 and math.isfinite(v)):
+        raise ValueError("快门速度需大于 0")
+    # 只保留 EXIF 分数（32 位无符号分子）存不下的保护，不再限制长曝光秒数
+    if v > 4294967295:
+        raise ValueError("快门速度过大，EXIF 无法保存")
     return v
 
 
@@ -314,6 +326,8 @@ def read_meta(path: str) -> dict:
     put("LensModel", "镜头", "shoot", lens or "—", lens)
 
     fnum = _first_num(_tag(tags, "EXIF FNumber"))
+    # 有的软件会把光圈写成 2147483647/766958445，不四舍五入会显示一长串小数
+    fnum = round(fnum, 2) if fnum else fnum
     put("FNumber", "光圈", "shoot", f"f/{fnum:g}" if fnum else "—", fnum)
 
     shut = _first_num(_tag(tags, "EXIF ExposureTime"))
@@ -323,6 +337,7 @@ def read_meta(path: str) -> dict:
     put("ISO", "ISO", "shoot", f"{int(iso)}" if iso else "—", int(iso) if iso else None)
 
     focal = _first_num(_tag(tags, "EXIF FocalLength"))
+    focal = round(focal, 2) if focal else focal
     put("FocalLength", "焦距", "shoot", f"{focal:g} mm" if focal else "—", focal)
 
     f35 = _first_num(_tag(tags, "EXIF FocalLengthIn35mmFilm"))
@@ -450,6 +465,80 @@ def _dms(v: float) -> tuple:
     m = int(m_f)
     s = (m_f - m) * 60
     return ((d, 1), (m, 1), (int(round(s * 10000)), 10000))
+
+
+# 整数型标签的取值范围（EXIF 类型号 → 上下限）
+_NUM_LIMITS = {
+    3: (0, 65535),                  # SHORT
+    4: (0, 4294967295),             # LONG
+    8: (-32768, 32767),             # SSHORT
+    9: (-2147483648, 2147483647),   # SLONG
+}
+
+
+def _fit_number(val, lo: int, hi: int):
+    """把值修成落在 [lo, hi] 的整数。整数存不下但形如 (分子, 分母) 时按分数换算。
+
+    修不了返回 None。真实案例：Photoshop 存过的 DJI 照片把「等效焦距」写成了
+    分数 2147483647/130341545，而 EXIF 规定它是 SHORT，piexif 打包直接抛
+    struct.error，整张图都写不进去。
+    """
+    if isinstance(val, bool):
+        return None
+    if isinstance(val, int):
+        return val if lo <= val <= hi else None
+    if isinstance(val, (list, tuple)):
+        if not all(isinstance(x, int) and not isinstance(x, bool) for x in val):
+            return None
+        if all(lo <= x <= hi for x in val):
+            return list(val)
+        if len(val) == 2 and val[1]:
+            r = int(round(val[0] / val[1]))
+            return r if lo <= r <= hi else None
+    return None
+
+
+def _sanitize(d: dict) -> None:
+    """写盘前按 piexif 声明的类型修正越界值。
+
+    只清洗、不改语义：能换算的换算成整数，换算不了的直接丢掉这个标签。
+    宁可少一个字段，也不能因为一个坏标签让整张照片写不进去。
+    """
+    for ifd_name in ("0th", "Exif", "GPS", "1st", "Interop"):
+        ifd = d.get(ifd_name)
+        if not isinstance(ifd, dict):
+            continue
+        table = piexif.TAGS.get(ifd_name) or {}
+        for tag in list(ifd):
+            meta = table.get(tag)
+            if not meta:
+                # piexif 不认识的标签，留着只会在 dump 时 KeyError
+                ifd.pop(tag, None)
+                continue
+            typ = meta.get("type")
+            val = ifd[tag]
+            if typ in _NUM_LIMITS:
+                lo, hi = _NUM_LIMITS[typ]
+                fitted = _fit_number(val, lo, hi)
+                if fitted is None:
+                    ifd.pop(tag, None)
+                else:
+                    ifd[tag] = fitted
+            elif typ in (5, 10):  # RATIONAL / SRATIONAL
+                if isinstance(val, int) and not isinstance(val, bool):
+                    ifd[tag] = (val, 1)
+                elif not (isinstance(val, (list, tuple)) and len(val) >= 2):
+                    ifd.pop(tag, None)
+            elif typ == 1:  # BYTE
+                if isinstance(val, int):
+                    if not 0 <= val <= 255:
+                        ifd.pop(tag, None)
+                elif isinstance(val, (list, tuple)):
+                    if not all(isinstance(x, int) and 0 <= x <= 255 for x in val):
+                        ifd.pop(tag, None)
+            elif typ in (2, 7):  # ASCII / UNDEFINED
+                if isinstance(val, str):
+                    ifd[tag] = val.encode("utf-8", "ignore")
 
 
 def _load_exif(path: str) -> dict:
@@ -769,6 +858,7 @@ def write_meta(paths: list[str], changes: dict, deletes: list[str] | None = None
                 st = os.stat(p)
                 d = _load_exif(p)
                 _apply(d, changes, deletes)
+                _sanitize(d)
                 blob = piexif.dump(d)
                 piexif.insert(blob, p)
                 try:

@@ -165,12 +165,6 @@ function wireWindowApi() {
       const m = await call(api.toggle_maximize.bind(api));
       setMaxState(m);
     };
-    // 双击顶栏最大化（顶栏同时是 pywebview 原生拖拽区）
-    $('#toolbar').addEventListener('dblclick', async (e) => {
-      if (e.target.closest('button, input, select, .search, .zoom-ctl, .mini-select, .winctl')) return;
-      const m = await call(api.toggle_maximize.bind(api));
-      setMaxState(m);
-    });
   }
 
   if (!has('move_to') || !has('resize_to')) return;
@@ -1043,7 +1037,7 @@ const EDIT_GROUPS = [
   {
     title: '拍摄参数', fields: [
       { k: 'FNumber', label: '光圈 (f/)', type: 'number', step: '0.1', ph: '例如 2.8' },
-      { k: 'ExposureTime', label: '快门 (秒)', type: 'text', ph: '例如 1/160 或 0.00625' },
+      { k: 'ExposureTime', label: '快门 (秒)', type: 'text', ph: '例如 1/160、0.00625 或 7200' },
       { k: 'ISO', label: 'ISO', type: 'number', step: '1', ph: '例如 400' },
       { k: 'FocalLength', label: '焦距 (mm)', type: 'number', step: '1', ph: '例如 50' },
       { k: 'FocalLength35', label: '等效焦距', type: 'number', step: '1', ph: '例如 75' },
@@ -1264,9 +1258,18 @@ async function applyEdits() {
         return;
       }
       const parts = t.split('/');
+      if (parts.length === 2 && !(Number(parts[1]) > 0)) {
+        toast('快门分母不能为 0', 'err');
+        return;
+      }
       const sec = parts.length === 2 ? Number(parts[0]) / Number(parts[1]) : Number(t);
-      if (!(sec > 0 && sec <= 3600)) {
-        toast('快门速度需大于 0 且不超过 3600 秒', 'err');
+      if (!(Number.isFinite(sec) && sec > 0)) {
+        toast('快门速度需大于 0', 'err');
+        return;
+      }
+      // 只挡 EXIF 分数存不下的超大值，长曝光不再限制 3600 秒
+      if (sec > 4294967295) {
+        toast('快门速度过大，EXIF 无法保存', 'err');
         return;
       }
       changes[k] = t;
@@ -1727,11 +1730,67 @@ function updateStatus() {
 function bindToolbar() {
   $('#btnCopyExif').onclick = openCopyMenu;
   $('#btnPasteExif').onclick = pasteClipboard;
-  // 顶栏同时是窗口拖拽区：控件上的 mousedown 不冒泡到 body，避免拖窗口抢走交互
-  $('#toolbar').addEventListener('mousedown', (e) => {
-    if (e.target.closest('button, input, select, .search, .zoom-ctl, .mini-select, .winctl')) {
-      e.stopPropagation();
+  /* 顶栏拖拽：和 Windows 一致——拖到屏幕上沿最大化，最大化时拖走还原。
+     窗口本身是无边框的，没有系统拖拽区，所以这里自己按屏幕坐标移动。 */
+  const onTitleBar = (e) => !e.target.closest('button, input, select, .search, .zoom-ctl, .mini-select, .winctl, a');
+
+  $('#toolbar').addEventListener('mousedown', async (e) => {
+    if (e.button !== 0 || !onTitleBar(e)) return;
+    const api = wapi();
+    if (!api || typeof api.get_drag_state !== 'function') return;
+    e.preventDefault();
+
+    const st = await api.get_drag_state().catch(() => null);
+    if (!st || !st.rect) return;
+    let { x, y, w, h } = st.rect;
+
+    if (st.maxed) {
+      // 从最大化拖出来：先还原，并让光标落在标题栏的同一横向位置
+      const rb = st.restore || { w: Math.min(1440, innerWidth - 80), h: Math.min(900, innerHeight - 80) };
+      const ratio = Math.min(1, Math.max(0, e.clientX / Math.max(1, innerWidth)));
+      w = rb.w; h = rb.h;
+      x = Math.round(e.screenX - w * ratio);
+      y = Math.round(e.screenY - 18);
+      const ok = await api.begin_drag(x, y, w, h).catch(() => false);
+      if (!ok) return;
+      setMaxState(false);
     }
+
+    const sx = e.screenX;
+    const sy = e.screenY;
+    const ox = x;
+    const oy = y;
+    let moved = false;
+
+    const onMove = (ev) => {
+      const dx = ev.screenX - sx;
+      const dy = ev.screenY - sy;
+      if (!moved && Math.abs(dx) + Math.abs(dy) < 3) return;
+      moved = true;
+      api.set_bounds(Math.round(ox + dx), Math.round(oy + dy), w, h).catch(() => {});
+    };
+
+    const onUp = async (ev) => {
+      window.removeEventListener('mousemove', onMove);
+      if (!moved) return;
+      // 松手时贴到屏幕上沿就最大化
+      if (ev.screenY <= 2) {
+        const m = await api.toggle_maximize().catch(() => null);
+        if (m !== null) setMaxState(m);
+      }
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp, { once: true });
+  });
+
+  // 双击顶栏最大化 / 还原
+  $('#toolbar').addEventListener('dblclick', async (e) => {
+    if (!onTitleBar(e)) return;
+    const api = wapi();
+    if (!api || typeof api.toggle_maximize !== 'function') return;
+    const m = await api.toggle_maximize().catch(() => null);
+    if (m !== null) setMaxState(m);
   });
 
   $('#btnBack').onclick = () => { if (S.hIdx > 0) { S.hIdx--; navigate(S.history[S.hIdx], false); } };
@@ -1869,7 +1928,8 @@ function modal({ title, body, foot, size = '', onClose }) {
   scrim.querySelector('.modal-body').innerHTML = body;
   const footEl = scrim.querySelector('.modal-foot');
   if (foot) footEl.innerHTML = foot; else footEl.remove();
-  scrim.querySelector('[data-close]').onclick = () => closeModal();
+  // 每个 [data-close] 都要绑：头部 × 和底部「取消 / 关闭」都要能关
+  scrim.querySelectorAll('[data-close]').forEach((b) => { b.onclick = () => closeModal(); });
   scrim.addEventListener('mousedown', (e) => { if (e.target === scrim) closeModal(); });
   root.appendChild(scrim);
   scrim._onClose = onClose;
@@ -2366,23 +2426,56 @@ function openSettings() {
       </div>
       <div id="stMap" hidden>
         <div class="form-row">
-          <label>高德地图 Key</label>
-          <input type="text" id="stKey" value="${esc(s.amap_key || '')}" placeholder="32 位字符" spellcheck="false">
+          <label>地图服务商</label>
+          <div class="seg" id="mapProv">
+            <button type="button" data-prov="amap">高德地图</button>
+            <button type="button" data-prov="google">Google 地图</button>
+          </div>
+          <div class="hint tight">高德适合国内拍摄，Google 适合海外。两套 Key 分别保存，来回切换不会丢。</div>
         </div>
-        <div class="form-row">
-          <label>安全密钥（securityJsCode）</label>
-          <input type="text" id="stSecret" value="${esc(s.amap_secret || '')}" placeholder="32 位字符" spellcheck="false">
+
+        <div id="provAmap">
+          <div class="form-row">
+            <label>高德地图 Key</label>
+            <div class="secret-field">
+              <input type="password" id="stKey" value="${esc(s.amap_key || '')}" placeholder="32 位字符" spellcheck="false" autocomplete="off">
+              <button type="button" class="secret-eye" data-eye="stKey" title="显示 / 隐藏" aria-label="显示或隐藏"><svg class="eye-on" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg><svg class="eye-off" viewBox="0 0 24 24" hidden><path d="M3.5 3.5l17 17"/><path d="M10.6 6.2A10.9 10.9 0 0 1 12 6c6 0 9.5 6 9.5 6a17 17 0 0 1-3.2 3.9"/><path d="M6.4 8.2A17 17 0 0 0 2.5 12s3.5 6 9.5 6c1.5 0 2.9-.3 4.1-.9"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg></button>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>安全密钥（securityJsCode）</label>
+            <div class="secret-field">
+              <input type="password" id="stSecret" value="${esc(s.amap_secret || '')}" placeholder="32 位字符" spellcheck="false" autocomplete="off">
+              <button type="button" class="secret-eye" data-eye="stSecret" title="显示 / 隐藏" aria-label="显示或隐藏"><svg class="eye-on" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg><svg class="eye-off" viewBox="0 0 24 24" hidden><path d="M3.5 3.5l17 17"/><path d="M10.6 6.2A10.9 10.9 0 0 1 12 6c6 0 9.5 6 9.5 6a17 17 0 0 1-3.2 3.9"/><path d="M6.4 8.2A17 17 0 0 0 2.5 12s3.5 6 9.5 6c1.5 0 2.9-.3 4.1-.9"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg></button>
+            </div>
+          </div>
+          <div class="inline-row mb">
+            <button class="btn" id="btnTestMap">测试连接</button>
+            <button class="btn ghost" id="btnTut">查看获取教程</button>
+          </div>
+          <div class="map-status" id="mapStatus">未配置时仍可使用全部 EXIF 功能，仅地图选点不可用。</div>
+          <div id="tutBox" class="tut-box" hidden></div>
         </div>
-        <div class="inline-row mb">
-          <button class="btn" id="btnTestMap">测试连接</button>
-          <button class="btn ghost" id="btnTut">查看获取教程</button>
+
+        <div id="provGoogle" hidden>
+          <div class="form-row">
+            <label>Google API Key</label>
+            <div class="secret-field">
+              <input type="password" id="stGKey" value="${esc(s.google_key || '')}" placeholder="以 AIza 开头" spellcheck="false" autocomplete="off">
+              <button type="button" class="secret-eye" data-eye="stGKey" title="显示 / 隐藏" aria-label="显示或隐藏"><svg class="eye-on" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></svg><svg class="eye-off" viewBox="0 0 24 24" hidden><path d="M3.5 3.5l17 17"/><path d="M10.6 6.2A10.9 10.9 0 0 1 12 6c6 0 9.5 6 9.5 6a17 17 0 0 1-3.2 3.9"/><path d="M6.4 8.2A17 17 0 0 0 2.5 12s3.5 6 9.5 6c1.5 0 2.9-.3 4.1-.9"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg></button>
+            </div>
+          </div>
+          <div class="inline-row mb">
+            <button class="btn" id="btnTestMapG">测试连接</button>
+            <button class="btn ghost" id="btnTutG">查看获取教程</button>
+          </div>
+          <div class="map-status" id="mapStatusG">需要能访问 Google 服务；国内网络通常要开系统级代理，否则地图加载不出来。</div>
+          <div id="tutBoxG" class="tut-box" hidden></div>
         </div>
-        <div class="map-status" id="mapStatus">未配置时仍可使用全部 EXIF 功能，仅地图选点不可用。</div>
-        <div id="tutBox" class="tut-box" hidden></div>
       </div>
       <div id="stAbout" hidden>
         <div class="group-title">ExifCraft</div>
-        <div class="kv"><span class="k">版本</span><span class="v">2.4.1</span></div>
+        <div class="kv"><span class="k">版本</span><span class="v">2.5.1</span></div>
         <div class="kv"><span class="k">支持</span><span class="v">JPG 读写 EXIF · RAW（含 CR3）只读</span></div>
         <div class="kv"><span class="k">ExifTool</span><span class="v small">${S.etAvailable ? '已调用 v' + esc(S.et.version || '') + '（仅用于读取 CR3）' : '未调用（可选）'}</span></div>
         <div class="kv"><span class="k">配置</span><span class="v small">${esc(CONFIG_DIR_LABEL)}</span></div>
@@ -2495,18 +2588,49 @@ function openSettings() {
     }
   };
 
-  $('#btnTut').onclick = () => {
-    const box = $('#tutBox');
-    if (!box.hidden) { box.hidden = true; return; }
-    box.hidden = false;
-    if (!box.dataset.loaded) {
-      box.appendChild($('#tplTutorial').content.cloneNode(true));
-      box.dataset.loaded = '1';
-      $$('[data-external]', box).forEach((a) => {
-        a.onclick = (e) => { e.preventDefault(); api('/api/open-external', { method: 'POST', body: JSON.stringify({ url: a.href }) }); };
-      });
-    }
+  /* ---- 地图服务商：只显示选中的那一家 ---- */
+  let prov = s.map_provider === 'google' ? 'google' : 'amap';
+  const syncProv = () => {
+    $$('#mapProv button').forEach((b) => b.classList.toggle('active', b.dataset.prov === prov));
+    $('#provAmap').hidden = prov !== 'amap';
+    $('#provGoogle').hidden = prov !== 'google';
   };
+  $$('#mapProv button').forEach((b) => {
+    b.onclick = () => { prov = b.dataset.prov; syncProv(); };
+  });
+  syncProv();
+
+  // Key 默认密文显示，点眼睛切换明文
+  $$('.secret-eye').forEach((btn) => {
+    btn.onclick = () => {
+      const inp = document.getElementById(btn.dataset.eye);
+      if (!inp) return;
+      const show = inp.type === 'password';
+      inp.type = show ? 'text' : 'password';
+      btn.classList.toggle('on', show);
+      const on = btn.querySelector('.eye-on');
+      const off = btn.querySelector('.eye-off');
+      if (on) on.hidden = show;
+      if (off) off.hidden = !show;
+    };
+  });
+
+  const bindTut = (btn, box, tpl) => {
+    $(btn).onclick = () => {
+      const b = $(box);
+      if (!b.hidden) { b.hidden = true; return; }
+      b.hidden = false;
+      if (!b.dataset.loaded) {
+        b.appendChild($(tpl).content.cloneNode(true));
+        b.dataset.loaded = '1';
+        $$('[data-external]', b).forEach((a) => {
+          a.onclick = (e) => { e.preventDefault(); api('/api/open-external', { method: 'POST', body: JSON.stringify({ url: a.href }) }); };
+        });
+      }
+    };
+  };
+  bindTut('#btnTut', '#tutBox', '#tplTutorial');
+  bindTut('#btnTutG', '#tutBoxG', '#tplTutorialGoogle');
 
   $('#btnTestMap').onclick = async () => {
     const key = $('#stKey').value.trim();
@@ -2515,8 +2639,23 @@ function openSettings() {
     if (!key || !secret) { st.innerHTML = '<span class="hint warn">Key 与安全密钥都要填写</span>'; return; }
     st.textContent = '正在测试…';
     try {
-      await loadAmap(key, secret);
-      st.innerHTML = '<span class="hint ok">连接成功，地图可以正常加载</span>';
+      await loadAmap(key, secret, true);
+      await amapProbe();
+      st.innerHTML = '<span class="hint ok">连接成功，地图和搜索都能用</span>';
+    } catch (e) {
+      st.innerHTML = `<span class="hint warn">连接失败：${esc(e.message)}</span>`;
+    }
+  };
+
+  $('#btnTestMapG').onclick = async () => {
+    const key = $('#stGKey').value.trim();
+    const st = $('#mapStatusG');
+    if (!key) { st.innerHTML = '<span class="hint warn">请先填写 Google API Key</span>'; return; }
+    st.textContent = '正在测试…';
+    try {
+      await loadGoogle(key, true);
+      await googleProbe();
+      st.innerHTML = '<span class="hint ok">连接成功，地图和搜索都能用</span>';
     } catch (e) {
       st.innerHTML = `<span class="hint warn">连接失败：${esc(e.message)}</span>`;
     }
@@ -2527,8 +2666,10 @@ function openSettings() {
     S.settings = await api('/api/settings', {
       method: 'POST',
       body: JSON.stringify({
+        map_provider: prov,
         amap_key: $('#stKey').value.trim(),
         amap_secret: $('#stSecret').value.trim(),
+        google_key: $('#stGKey').value.trim(),
         theme: document.documentElement.dataset.theme,
         native_frame: !!($('#stNativeFrame') && $('#stNativeFrame').checked),
         exiftool_path: $('#stEtPath').value.trim(),
@@ -2640,27 +2781,133 @@ async function loadHistory() {
   } catch (e) { box.innerHTML = `<div class="dir-row err">${esc(e.message)}</div>`; }
 }
 
-/* ============================================================ amap */
-let amapLoading = null;
-function loadAmap(key, secret) {
-  if (amapLoading) return amapLoading;
-  amapLoading = new Promise((resolve, reject) => {
-    if (window.AMap) { resolve(window.AMap); return; }
-    window._AMapSecurityConfig = { securityJsCode: secret };
-    const s = document.createElement('script');
-    s.src = `https://webapi.amap.com/maps?v=2.0&key=${encodeURIComponent(key)}&plugin=AMap.PlaceSearch,AMap.AutoComplete,AMap.Geocoder`;
-    s.onerror = () => { amapLoading = null; reject(new Error('无法加载高德地图脚本，请检查网络')); };
-    s.onload = () => {
-      if (window.AMap) resolve(window.AMap);
-      else { amapLoading = null; reject(new Error('高德地图初始化失败，请检查 Key 与安全密钥')); }
-    };
-    document.head.appendChild(s);
-    setTimeout(() => { if (!window.AMap) { amapLoading = null; reject(new Error('加载超时，请检查 Key / 白名单 / 网络')); } }, 12000);
-  });
-  return amapLoading;
+/* ============================================================ 地图选点（高德 / Google） */
+/* 两家的差别只有三处：加载脚本、地图对象、搜索接口。其余交互完全一致。 */
+
+let amapLoaded = null;   // { key, secret, promise }
+let googleLoaded = null; // { key, promise }
+let googleAuthFailed = false;
+
+function dropScripts(tag) {
+  document.querySelectorAll(`script[data-map="${tag}"]`).forEach((s) => s.remove());
 }
 
-/* 坐标转换（与后端一致） */
+/* 高德：换 Key 时重新加载脚本 */
+function loadAmap(key, secret, force = false) {
+  if (!force && amapLoaded && amapLoaded.key === key && amapLoaded.secret === secret && window.AMap) {
+    return Promise.resolve(window.AMap);
+  }
+  dropScripts('amap');
+  try { delete window.AMap; } catch (_) { window.AMap = undefined; }
+  amapLoaded = null;
+  window._AMapSecurityConfig = { securityJsCode: secret };
+
+  const promise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.dataset.map = 'amap';
+    s.src = `https://webapi.amap.com/maps?v=2.0&key=${encodeURIComponent(key)}&plugin=AMap.PlaceSearch,AMap.Geocoder`;
+    s.onerror = () => { amapLoaded = null; reject(new Error('无法加载高德地图脚本，请检查网络')); };
+    s.onload = () => {
+      if (window.AMap) resolve(window.AMap);
+      else { amapLoaded = null; reject(new Error('高德地图初始化失败，请检查 Key 与安全密钥')); }
+    };
+    document.head.appendChild(s);
+    setTimeout(() => {
+      if (!window.AMap) { amapLoaded = null; reject(new Error('加载超时，请检查 Key / 白名单 / 网络')); }
+    }, 12000);
+  });
+  amapLoaded = { key, secret, promise };
+  return promise;
+}
+
+/* Google：官方不支持重复加载，换 Key 时先卸载旧脚本再重来 */
+function loadGoogle(key, force = false) {
+  if (!force && googleLoaded && googleLoaded.key === key && window.google && window.google.maps) {
+    return Promise.resolve(window.google.maps);
+  }
+  dropScripts('google');
+  try { delete window.google; } catch (_) { window.google = undefined; }
+  googleLoaded = null;
+  googleAuthFailed = false;
+  window.gm_authFailure = () => { googleAuthFailed = true; };
+
+  const promise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.dataset.map = 'google';
+    s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&v=weekly&language=zh-CN&loading=async`;
+    s.onerror = () => {
+      googleLoaded = null;
+      reject(new Error('无法加载 Google 地图脚本：连不上 Google。国内网络需要开启系统级代理'));
+    };
+    s.onload = () => {
+      const t0 = Date.now();
+      const tick = () => {
+        if (googleAuthFailed) {
+          googleLoaded = null;
+          reject(new Error('Key 无效、未启用 Maps JavaScript API，或项目没绑定结算方式'));
+          return;
+        }
+        if (window.google && window.google.maps && window.google.maps.Map) resolve(window.google.maps);
+        else if (Date.now() - t0 > 12000) { googleLoaded = null; reject(new Error('Google 地图初始化超时，请检查网络与 Key')); }
+        else setTimeout(tick, 120);
+      };
+      tick();
+    };
+    document.head.appendChild(s);
+  });
+  googleLoaded = { key, promise };
+  return promise;
+}
+
+const AMAP_ERR = {
+  INVALID_USER_KEY: 'Key 填错或被删除，重新复制一次',
+  USERKEY_PLAT_NOMATCH: 'Key 的服务平台选错了，必须是「Web端(JS API)」',
+  INVALID_USER_DOMAIN: '域名白名单没填或填错，应填 127.0.0.1',
+  INVALID_USER_SCODE: '安全密钥缺失或与 Key 不匹配',
+  DAILY_QUERY_OVER_LIMIT: '当日配额用尽，次日恢复',
+};
+
+/* 真检测：能搜到一个固定地点才算通 */
+function amapProbe() {
+  return new Promise((resolve, reject) => {
+    try {
+      const g = new window.AMap.Geocoder();
+      g.getLocation('天安门', (status, result) => {
+        if (status === 'complete' && result && result.geocodes && result.geocodes.length) {
+          resolve(true);
+          return;
+        }
+        const code = (result && (result.info || result.message)) || status || 'UNKNOWN';
+        reject(new Error(AMAP_ERR[code] || code));
+      });
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+const GOOGLE_ERR = {
+  REQUEST_DENIED: 'Geocoding API 没启用，或 Key 的「API 限制」里没勾选它',
+  OVER_QUERY_LIMIT: '配额用尽，稍后再试或检查配额上限',
+  ZERO_RESULTS: '接口通了但没返回结果，检查 Geocoding API 是否启用',
+  INVALID_REQUEST: '请求格式不对，检查 Key 是否有多余空格',
+};
+
+function googleProbe() {
+  return new Promise((resolve, reject) => {
+    if (googleAuthFailed) {
+      reject(new Error('Key 无效、未启用 Maps JavaScript API，或项目没绑定结算方式'));
+      return;
+    }
+    const geo = new window.google.maps.Geocoder();
+    geo.geocode({ address: 'Tokyo Tower' }, (res, status) => {
+      if (status === 'OK' && res && res.length) resolve(true);
+      else reject(new Error(GOOGLE_ERR[status] || `Google 返回：${status}`));
+    });
+  });
+}
+
+/* 坐标转换（与后端一致）：高德是 GCJ-02，Google 本身就是 WGS-84 */
 const X_PI = Math.PI * 3000 / 180;
 function outOfChina(lng, lat) { return !(lng > 73.66 && lng < 135.05 && lat > 3.86 && lat < 53.55); }
 function transformLat(x, y) {
@@ -2701,79 +2948,205 @@ function gcj2wgs(lng, lat) {
 }
 
 async function openMapPicker(onPick) {
-  const key = (S.settings.amap_key || '').trim();
-  const secret = (S.settings.amap_secret || '').trim();
-  if (!key || !secret) {
-    toast('请先在「设置 → 地图」中填写高德 Key 与安全密钥', 'err', 4200);
+  const provider = S.settings.map_provider === 'google' ? 'google' : 'amap';
+  const amapKey = (S.settings.amap_key || '').trim();
+  const amapSecret = (S.settings.amap_secret || '').trim();
+  const gKey = (S.settings.google_key || '').trim();
+
+  if (provider === 'amap' && (!amapKey || !amapSecret)) {
+    toast('请先在「设置 → 地图」填写高德 Key 与安全密钥', 'err', 4200);
+    openSettings();
+    return;
+  }
+  if (provider === 'google' && !gKey) {
+    toast('请先在「设置 → 地图」填写 Google API Key', 'err', 4200);
     openSettings();
     return;
   }
 
   const m = modal({
-    title: '地图选点',
+    title: provider === 'google' ? '地图选点 · Google' : '地图选点 · 高德',
     size: 'xwide',
     body: `<div class="map-wrap">
-             <div id="amapBox"></div>
-             <div class="map-search">
-               <input type="text" id="mapSearch" placeholder="搜索地点，例如：上海外滩" spellcheck="false">
-               <button class="btn primary" id="mapGo">搜索</button>
+             <div id="mapBox"></div>
+             <div class="map-search-wrap">
+               <div class="map-search">
+                 <input type="text" id="mapSearch" placeholder="搜索地点，例如：东京塔" spellcheck="false">
+                 <button class="btn primary" id="mapGo">搜索</button>
+               </div>
+               <div class="map-results" id="mapResults" hidden></div>
              </div>
              <div class="map-tip">点击地图任意位置放置标记</div>
            </div>
            <div class="map-coord">WGS-84：<b id="mcLat">—</b><b id="mcLng"></b>
              <span class="hint">（写入 EXIF 的坐标）</span></div>
-           <div class="map-status" id="mapMsg">在地图上点击选择位置，或搜索地点后拖动标记。</div>`,
+           <div class="map-status" id="mapMsg">在地图上点击选择位置，或搜索地点后从列表里挑一条。</div>`,
     foot: `<div class="tool-spacer"></div>
            <button class="btn ghost" data-close>取消</button>
            <button class="btn primary" id="mapOk" disabled>使用此位置</button>`,
   });
 
   let picked = null;
+  let view = null;      // { moveTo(lat, lng, zoom) } 由各服务商实现
+  let search = null;    // async (q) => [{ name, address, lat, lng }]
+
+  const setPoint = (lat, lng) => {
+    picked = { lat, lng };
+    $('#mcLat').textContent = lat.toFixed(6);
+    $('#mcLng').textContent = ', ' + lng.toFixed(6);
+    $('#mapOk').disabled = false;
+  };
+
+  /* ---- 搜索候选列表 ---- */
+  const box = $('#mapResults');
+  let results = [];
+  let activeIdx = -1;
+
+  const closeResults = () => { box.hidden = true; results = []; activeIdx = -1; };
+
+  const highlight = () => {
+    $$('.map-res-row[data-i]', box).forEach((row) => {
+      row.classList.toggle('active', Number(row.dataset.i) === activeIdx);
+    });
+  };
+
+  const choose = (i) => {
+    const it = results[i];
+    if (!it) return;
+    closeResults();
+    view.moveTo(it.lat, it.lng, 15);
+    setPoint(it.lat, it.lng);
+    $('#mapMsg').textContent = `已定位：${it.name}`;
+  };
+
+  const renderResults = (items, emptyMsg) => {
+    results = items;
+    activeIdx = -1;
+    if (!items.length) {
+      box.innerHTML = `<div class="map-res-empty">${esc(emptyMsg || '没有找到，换个关键词试试')}</div>`;
+      box.hidden = false;
+      return;
+    }
+    box.innerHTML = items.map((it, i) => `
+      <div class="map-res-row" data-i="${i}">
+        <div class="map-res-name">${esc(it.name)}</div>
+        ${it.address ? `<div class="map-res-addr">${esc(it.address)}</div>` : ''}
+      </div>`).join('');
+    box.hidden = false;
+    $$('.map-res-row[data-i]', box).forEach((row) => {
+      row.onclick = () => choose(Number(row.dataset.i));
+    });
+  };
+
+  const doSearch = async () => {
+    const q = $('#mapSearch').value.trim();
+    if (!q) return;
+    $('#mapMsg').textContent = '搜索中…';
+    try {
+      const items = await search(q);
+      renderResults(items);
+      $('#mapMsg').textContent = items.length ? `找到 ${items.length} 个结果，点一条即可定位` : '没有找到匹配的地点';
+    } catch (e) {
+      closeResults();
+      $('#mapMsg').innerHTML = `<span class="hint warn">搜索失败：${esc(e.message)}</span>`;
+    }
+  };
+
+  $('#mapGo').onclick = doSearch;
+  $('#mapSearch').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      if (!box.hidden && activeIdx >= 0) { choose(activeIdx); return; }
+      doSearch();
+    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      if (box.hidden || !results.length) return;
+      e.preventDefault();
+      activeIdx = e.key === 'ArrowDown'
+        ? (activeIdx + 1) % results.length
+        : (activeIdx - 1 + results.length) % results.length;
+      highlight();
+    } else if (e.key === 'Escape' && !box.hidden) {
+      e.stopPropagation();
+      closeResults();
+    }
+  });
+
   try {
-    const AMap = await loadAmap(key, secret);
-    const map = new AMap.Map('amapBox', { zoom: 11, center: [116.397428, 39.90923], resizeEnable: true });
-    const marker = new AMap.Marker({ anchor: 'bottom-center', draggable: true });
-    map.add(marker);
+    if (provider === 'amap') {
+      const AMap = await loadAmap(amapKey, amapSecret);
+      const map = new AMap.Map('mapBox', { zoom: 11, center: [116.397428, 39.90923], resizeEnable: true });
+      const marker = new AMap.Marker({ anchor: 'bottom-center', draggable: true });
+      map.add(marker);
 
-    const setPoint = (gcjLng, gcjLat) => {
-      const [wlng, wlat] = gcj2wgs(gcjLng, gcjLat);
-      picked = { lat: wlat, lng: wlng };
-      $('#mcLat').textContent = wlat.toFixed(6);
-      $('#mcLng').textContent = ', ' + wlng.toFixed(6);
-      $('#mapOk').disabled = false;
-      marker.setPosition([gcjLng, gcjLat]);
-      map.setCenter([gcjLng, gcjLat]);
-    };
+      const pickGcj = (gl, ga, moveMarker) => {
+        if (moveMarker) marker.setPosition([gl, ga]);
+        const [wl, wa] = gcj2wgs(gl, ga);
+        setPoint(wa, wl);
+      };
+      map.on('click', (e) => pickGcj(e.lnglat.getLng(), e.lnglat.getLat(), true));
+      marker.on('dragend', (e) => pickGcj(e.lnglat.getLng(), e.lnglat.getLat(), false));
 
-    map.on('click', (e) => setPoint(e.lnglat.getLng(), e.lnglat.getLat()));
-    marker.on('dragend', (e) => setPoint(e.lnglat.getLng(), e.lnglat.getLat()));
-
-    const doSearch = () => {
-      const q = $('#mapSearch').value.trim();
-      if (!q) return;
-      const ps = new AMap.PlaceSearch({ pageSize: 1, extensions: 'all' });
-      ps.search(q, (status, result) => {
-        if (status === 'complete' && result.poiList && result.poiList.pois.length) {
-          const p = result.poiList.pois[0];
-          setPoint(p.location.getLng(), p.location.getLat());
-          $('#mapMsg').textContent = `已定位：${p.name}${p.address ? ' · ' + p.address : ''}`;
-        } else {
-          $('#mapMsg').innerHTML = '<span class="hint warn">没有找到该地点，换个关键词试试</span>';
-        }
+      view = {
+        moveTo(lat, lng, zoom) {
+          const [gl, ga] = wgs2gcj(lng, lat);
+          map.setZoomAndCenter(zoom, [gl, ga]);
+          marker.setPosition([gl, ga]);
+        },
+      };
+      search = (q) => new Promise((resolve) => {
+        const ps = new AMap.PlaceSearch({ pageSize: 10, extensions: 'base' });
+        ps.search(q, (status, result) => {
+          if (status !== 'complete' || !result || !result.poiList || !result.poiList.pois) { resolve([]); return; }
+          resolve(result.poiList.pois.map((p) => {
+            const [wl, wa] = gcj2wgs(p.location.getLng(), p.location.getLat());
+            const addr = p.address || [p.pname, p.cityname, p.adname].filter(Boolean).join('');
+            return { name: p.name, address: addr, lat: wa, lng: wl };
+          }));
+        });
       });
-    };
-    $('#mapGo').onclick = doSearch;
-    $('#mapSearch').addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+    } else {
+      const maps = await loadGoogle(gKey);
+      const map = new maps.Map($('#mapBox'), {
+        center: { lat: 20, lng: 0 },
+        zoom: 2,
+        mapTypeControl: false,
+        streetViewControl: false,
+        fullscreenControl: false,
+      });
+      const marker = new maps.Marker({ map, draggable: true });
 
+      map.addListener('click', (e) => {
+        marker.setPosition(e.latLng);
+        setPoint(e.latLng.lat(), e.latLng.lng());
+      });
+      marker.addListener('dragend', (e) => setPoint(e.latLng.lat(), e.latLng.lng()));
+
+      view = {
+        moveTo(lat, lng, zoom) {
+          const pos = { lat, lng };
+          map.setCenter(pos);
+          map.setZoom(zoom);
+          marker.setPosition(pos);
+        },
+      };
+      search = (q) => new Promise((resolve) => {
+        const geo = new maps.Geocoder();
+        geo.geocode({ address: q }, (res, status) => {
+          if (status !== 'OK' || !res) { resolve([]); return; }
+          resolve(res.map((r) => ({
+            name: r.formatted_address,
+            address: `${r.geometry.location.lat().toFixed(5)}, ${r.geometry.location.lng().toFixed(5)}`,
+            lat: r.geometry.location.lat(),
+            lng: r.geometry.location.lng(),
+          })));
+        });
+      });
+    }
+
+    // 已有坐标就定位过去
     const cur = S.meta?.gps;
     if (cur && cur.lat != null) {
-      const [gl, ga] = wgs2gcj(cur.lng, cur.lat);
-      map.setZoomAndCenter(15, [gl, ga]);
-      marker.setPosition([gl, ga]);
-      picked = { lat: cur.lat, lng: cur.lng };
-      $('#mcLat').textContent = cur.lat.toFixed(6);
-      $('#mcLng').textContent = ', ' + cur.lng.toFixed(6);
-      $('#mapOk').disabled = false;
+      view.moveTo(cur.lat, cur.lng, 15);
+      setPoint(cur.lat, cur.lng);
       $('#mapMsg').textContent = '已定位到这张照片现有的坐标，可直接拖动标记微调。';
     }
   } catch (e) {
@@ -2787,6 +3160,7 @@ async function openMapPicker(onPick) {
     onPick(picked.lat, picked.lng);
   };
 }
+
 
 /* ============================================================ viewer */
 let vwLoading = false;
@@ -2802,6 +3176,7 @@ function openViewer(idx) {
   S.viewer.zoom = 1;
   S.viewer.ox = 0; S.viewer.oy = 0;
   $('#viewer').hidden = false;
+  document.body.classList.add('viewing');
   loadViewerImage();
 }
 
@@ -2853,6 +3228,7 @@ function renderViewerExif(path) {
 
 function closeViewer() {
   $('#viewer').hidden = true;
+  document.body.classList.remove('viewing');
   $('#vwImg').src = '';
 }
 

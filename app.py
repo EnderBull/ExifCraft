@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 import traceback
 import webbrowser
@@ -33,15 +34,49 @@ def _fatal(msg: str) -> None:
         print(msg)
 
 
+def _limit_maximized_bounds(win, tries: int = 25) -> None:
+    """把最大化范围限制在显示器工作区（不含任务栏）。
+
+    WinForms 的无边框窗口直接最大化会连任务栏一起盖住，这是它的已知行为。
+    设置 MaximizedBounds 后和普通窗口一样，只铺满任务栏以外的区域；
+    Win+↑、把窗口拖到屏幕上沿这类系统最大化也会一起生效。
+
+    启动时窗口句柄可能还没建好，Invoke 会失败，所以这里等句柄就绪再设。
+    """
+    err = None
+    for _ in range(tries):
+        try:
+            form = win.native
+            if form is not None and form.IsHandleCreated:
+                from System import Action
+                from System.Windows.Forms import Screen
+
+                def _set():
+                    form.MaximizedBounds = Screen.FromControl(form).WorkingArea
+
+                # WinForms 控件只能在 UI 线程上改，这里转过去执行
+                form.Invoke(Action(_set))
+                return
+        except Exception as ex:
+            err = ex
+        time.sleep(0.1)
+    if err is not None:
+        try:
+            log = config.appdata_dir() / "window-error.log"
+            log.write_text(f"设置最大化边界失败：{type(err).__name__}: {err}", encoding="utf-8")
+        except Exception:
+            pass
+
+
 class WindowApi:
     """暴露给前端的最小窗口控制接口（Windows 无边框窗口自绘标题栏用）。
 
     macOS 版一律使用系统原生标题栏，红黄绿交通灯由系统绘制，
     因此这里的位置/尺寸接口只用于前端查询，不会影响窗口行为。
     """
-
     def __init__(self):
         self._maxed = False
+        self._restore_rect = None
 
     @staticmethod
     def _win():
@@ -55,6 +90,55 @@ class WindowApi:
         w.minimize()
         return True
 
+    def _dpi_scale(self, hwnd) -> float:
+        try:
+            import ctypes
+            return ctypes.windll.user32.GetDpiForWindow(hwnd) / 96.0 or 1.0
+        except Exception:
+            return 1.0
+
+    def _rect_css(self, w) -> dict:
+        """当前窗口矩形，换算成前端用的 CSS 像素。"""
+        import ctypes
+        from ctypes import wintypes
+        hwnd = w.native.Handle.ToInt32()
+        s = self._dpi_scale(hwnd)
+        r = wintypes.RECT()
+        ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(r))
+        return {"x": r.left / s, "y": r.top / s,
+                "w": (r.right - r.left) / s, "h": (r.bottom - r.top) / s}
+
+    def get_drag_state(self) -> dict:
+        """前端拖拽用：当前矩形、是否最大化、最大化之前的矩形。"""
+        w = self._win()
+        if not w:
+            return {}
+        try:
+            return {"rect": self._rect_css(w), "maxed": self._is_maxed(w),
+                    "restore": self._restore_rect}
+        except Exception:
+            return {}
+
+    def begin_drag(self, x, y, width, height) -> bool:
+        """开始拖拽：如果当前是最大化，先还原并摆到指定位置。"""
+        w = self._win()
+        if not w:
+            return False
+        try:
+            if self._is_maxed(w):
+                w.restore()
+                self._maxed = False
+            self._restore_rect = None
+            return self.set_bounds(x, y, width, height)
+        except Exception:
+            return False
+
+    def _is_maxed(self, w) -> bool:
+        try:
+            return int(w.native.WindowState) == 2  # FormWindowState.Maximized
+        except Exception:
+            return self._maxed
+
     def toggle_maximize(self) -> bool:
         w = self._win()
         if not w:
@@ -66,10 +150,15 @@ class WindowApi:
                 return not self._maxed
             except Exception:
                 return False
-        if self._maxed:
+        if self._is_maxed(w):
             w.restore()
             self._maxed = False
         else:
+            try:
+                self._restore_rect = self._rect_css(w)
+            except Exception:
+                self._restore_rect = None
+            _limit_maximized_bounds(w)
             w.maximize()
             self._maxed = True
         return self._maxed
@@ -120,7 +209,7 @@ class WindowApi:
 
     def resize_to(self, width: int, height: int) -> bool:
         w = self._win()
-        if not w or self._maxed:
+        if not w or self._is_maxed(w):
             return False
         w.resize(int(width), int(height))
         return True
@@ -128,7 +217,7 @@ class WindowApi:
     def set_bounds(self, x: int, y: int, width: int, height: int) -> bool:
         """一次调用同时设置位置和尺寸，避免 move+resize 两帧重绘造成闪烁。"""
         w = self._win()
-        if not w or self._maxed:
+        if not w or self._is_maxed(w):
             return False
         if IS_MAC:
             try:
@@ -169,6 +258,28 @@ class WindowApi:
                 return False
 
 
+_LAST_MAX_STATE = {"value": None}
+
+
+def _sync_max_state(win, maxed: bool) -> None:
+    """把真实的最大化状态推给自绘标题栏（贴边最大化时按钮图标也要变）。
+
+    事件是在 UI 线程上触发的，而 evaluate_js 会阻塞等 JS 返回，
+    直接在 UI 线程调用会卡死，所以另起线程。
+    """
+    if _LAST_MAX_STATE["value"] == maxed:
+        return
+    _LAST_MAX_STATE["value"] = maxed
+
+    def run():
+        try:
+            win.evaluate_js(f"setMaxState({'true' if maxed else 'false'})")
+        except Exception:
+            pass
+
+    threading.Thread(target=run, daemon=True).start()
+
+
 def _mac_window_size() -> tuple[int, int]:
     """macOS：按屏幕可用区域给一个合适的初始尺寸，避免小屏笔记本上窗口超出屏幕。"""
     try:
@@ -193,7 +304,7 @@ def run(browser_only: bool = False, port: int = 0) -> None:
         try:
             import webview
             target = url + ("?framed=1" if use_native_frame else "?chrome=1")
-            webview.create_window(
+            win = webview.create_window(
                 "ExifCraft · 照片元数据工具",
                 target,
                 width=win_w,
@@ -205,7 +316,15 @@ def run(browser_only: bool = False, port: int = 0) -> None:
                 shadow=use_native_frame,
                 js_api=WindowApi(),
             )
-            webview.start()
+            # 系统最大化（贴边、Win+↑）后同步按钮图标
+            win.events.maximized += lambda w: _sync_max_state(w, True)
+            win.events.restored += lambda w: _sync_max_state(w, False)
+
+            if use_native_frame:
+                webview.start()
+            else:
+                # 启动时先设好最大化边界，Win+↑ / 拖到屏幕上沿也不会盖住任务栏
+                webview.start(lambda: _limit_maximized_bounds(win))
             srv.stop()
             return
         except Exception:

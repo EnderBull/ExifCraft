@@ -1299,6 +1299,23 @@ input[type=range]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 7px co
 .hint.ok { color: var(--md-success); }
 .hint.big { font-size: 11px; }
 
+/* Key 输入框：默认密文，右侧小眼睛切换明文 */
+.secret-field { position: relative; display: flex; }
+.secret-field input { flex: 1; padding-right: 44px; }
+.secret-eye {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  width: 34px; height: 34px;
+  display: grid; place-items: center;
+  border: 0; border-radius: 50%;
+  background: transparent;
+  color: var(--md-on-surface-variant);
+  cursor: pointer;
+  transition: background var(--md-dur-short) linear, color var(--md-dur-short) linear;
+}
+.secret-eye:hover { background: color-mix(in oklab, currentColor 12%, transparent); color: var(--md-on-surface); }
+.secret-eye.on { color: var(--md-primary); }
+.secret-eye svg { width: 18px; height: 18px; }
+
 .form-row input[type=text], .form-row input[type=number], .form-row input[type=password] {
   height: 40px; padding: 0 12px;
   background: var(--md-surface-container-highest);
@@ -1519,8 +1536,20 @@ table.preview td.err { color: var(--md-error); }
 .tutorial a:hover { text-decoration: underline; }
 .tutorial .err-table { margin: 10px 0; }
 
-/* M3 snackbar */
-#toasts { position: fixed; right: 18px; bottom: 44px; display: flex; flex-direction: column; gap: 8px; z-index: 200; }
+/* M3 snackbar：挂在中间主窗口右下角，右边缘让开可拖动的信息栏，
+   底部抬到操作条上方，避免遮挡「应用」和「编辑 EXIF」这类按钮 */
+#toasts {
+  position: fixed;
+  right: calc(var(--iw, 320px) + 18px);
+  bottom: 104px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  z-index: 200;
+}
+/* 全屏预览时中间区域被盖住，提示框回到窗口右下角 */
+body.viewing #toasts { right: 18px; bottom: 44px; }
 .toast {
   display: flex;
   align-items: center;
@@ -1660,12 +1689,29 @@ table.preview td.err { color: var(--md-error); }
 
 /* ============================================================ map */
 .map-wrap { position: relative; height: 380px; border-radius: var(--md-shape-md); overflow: hidden; background: var(--md-surface-container); }
-#amapBox { position: absolute; inset: 0; }
-.map-search {
-  position: absolute; left: 12px; top: 12px; right: 12px;
-  z-index: 10;
-  display: flex; gap: 6px;
+#mapBox { position: absolute; inset: 0; }
+/* 搜索框与候选列表共用一个定位壳：高德 / Google 的选点窗口结构完全一致 */
+.map-search-wrap { position: absolute; left: 12px; top: 12px; right: 12px; z-index: 10; }
+.map-search { display: flex; gap: 6px; }
+.map-results {
+  margin-top: 6px;
+  max-height: 236px;
+  overflow-y: auto;
+  background: var(--md-surface-container-high);
+  border-radius: var(--md-shape-md);
+  box-shadow: var(--md-elev-3);
 }
+.map-res-row { padding: 9px 14px; cursor: pointer; border-bottom: 1px solid var(--md-outline-variant); }
+.map-res-row:last-child { border-bottom: 0; }
+.map-res-row:hover, .map-res-row.active { background: color-mix(in oklab, var(--md-on-surface) 9%, transparent); }
+.map-res-name { font: var(--md-typescale-body-m); color: var(--md-on-surface); }
+.map-res-addr {
+  margin-top: 2px;
+  font: var(--md-typescale-body-s);
+  color: var(--md-on-surface-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.map-res-empty { padding: 12px 14px; font: var(--md-typescale-body-s); color: var(--md-on-surface-muted); }
 .map-search input {
   flex: 1;
   height: 40px;
